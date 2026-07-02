@@ -7,6 +7,16 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Dict
 
+# Load .env file if present (must happen BEFORE reading os.getenv)
+try:
+    from dotenv import load_dotenv
+    # .env should sit next to the project root (where run.py lives)
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    load_dotenv(os.path.join(_root, ".env"))
+except ImportError:
+    # python-dotenv not installed — env vars must be set in the shell
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Countries and their job portals

@@ -119,6 +119,33 @@ async def api_stats():
     return count_jobs()
 
 
+@app.get("/api/diagnostics")
+async def api_diagnostics():
+    """Show config status (masked) so you can see what's loaded and what's missing."""
+    def mask(v: str) -> str:
+        if not v:
+            return "(empty)"
+        if len(v) <= 8:
+            return v[:2] + "***"
+        return v[:4] + "..." + v[-4:]
+
+    return {
+        "telegram_bot_token": mask(settings.TELEGRAM_BOT_TOKEN),
+        "telegram_chat_id":   mask(settings.TELEGRAM_CHAT_ID),
+        "gemini_api_key":     mask(settings.GEMINI_API_KEY),
+        "gemini_model":       settings.GEMINI_MODEL,
+        "database_path":      settings.DATABASE_PATH,
+        "scan_cron_hours":    settings.SCAN_CRON_HOURS,
+        "scan_cron_tz":       settings.SCAN_CRON_TZ,
+        "headless":           settings.HEADLESS,
+        "telegram_configured": bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID),
+        "gemini_configured":   bool(settings.GEMINI_API_KEY),
+        "ready":               bool(
+            settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID and settings.GEMINI_API_KEY
+        ),
+    }
+
+
 @app.get("/screenshot/{job_id}")
 async def job_screenshot(job_id: int):
     job = get_job(job_id)
