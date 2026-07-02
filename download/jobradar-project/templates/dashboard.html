@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>JobRadar — Eastern Europe Job Scout</title>
+<title>JobRadar — Europe Job Scout</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -27,14 +27,61 @@
 
   .toolbar {
     background: #1a202c;
-    padding: 10px 24px;
+    padding: 12px 24px;
     border-bottom: 1px solid #2d3748;
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    flex-wrap: wrap;
   }
-  .toolbar form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .toolbar-row {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .toolbar-row:last-child { margin-bottom: 0; }
+  .filter-group {
+    background: #2d3748;
+    border: 1px solid #4a5568;
+    border-radius: 6px;
+    padding: 8px 12px;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .filter-group h4 {
+    margin: 0 0 6px 0;
+    font-size: 11px;
+    text-transform: uppercase;
+    color: #fbbf24;
+    letter-spacing: 0.5px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .filter-group h4 a {
+    color: #60a5fa;
+    font-size: 10px;
+    text-transform: none;
+    cursor: pointer;
+  }
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    padding: 3px 0;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .checkbox-row input[type=checkbox] {
+    margin-right: 6px;
+    cursor: pointer;
+  }
+  .checkbox-row .flag {
+    margin-right: 4px;
+    font-size: 14px;
+  }
+  .checkbox-row .dial {
+    color: #718096;
+    font-size: 11px;
+    margin-left: 4px;
+  }
   select, button, input {
     background: #2d3748;
     color: #e6e6e6;
@@ -49,8 +96,15 @@
     font-weight: 600;
     border: none;
     cursor: pointer;
+    padding: 8px 18px;
   }
   button.primary:hover { background: #f59e0b; }
+  button.secondary {
+    background: #374151;
+    color: #e6e6e6;
+    border: 1px solid #4a5568;
+    cursor: pointer;
+  }
   a { color: #60a5fa; text-decoration: none; }
   a:hover { text-decoration: underline; }
 
@@ -74,6 +128,7 @@
     letter-spacing: 0.5px;
     position: sticky;
     top: 0;
+    z-index: 1;
   }
   tr:hover td { background: #1f2937; }
   .flag { font-size: 16px; }
@@ -91,7 +146,6 @@
   .status-saved    { background: #78350f; color: #fde68a; }
   .status-applied  { background: #14532d; color: #bbf7d0; }
   .status-rejected { background: #7f1d1d; color: #fecaca; }
-
   .summary { color: #d1d5db; max-width: 480px; }
   .meta { color: #718096; font-size: 11px; margin-top: 3px; }
   .empty {
@@ -99,7 +153,11 @@
     text-align: center;
     color: #718096;
   }
-
+  .scan-info {
+    font-size: 12px;
+    color: #a0aec0;
+    margin-top: 6px;
+  }
   .toast {
     position: fixed;
     bottom: 20px;
@@ -112,14 +170,20 @@
     opacity: 0;
     transform: translateY(20px);
     transition: all .3s;
+    max-width: 360px;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.error { background: #7f1d1d; color: #fecaca; }
+
+  /* Scrollbar styling */
+  .filter-group::-webkit-scrollbar { width: 6px; }
+  .filter-group::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 3px; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>📡 JobRadar</h1>
+  <h1>📡 JobRadar <span style="font-size:13px;color:#718096;font-weight:normal;">— Europe</span></h1>
   <div class="stats">
     <span>Total jobs: <b>{{ stats.total }}</b></span>
     <span>Eligible: <b>{{ stats.eligible }}</b></span>
@@ -128,31 +192,59 @@
 </header>
 
 <div class="toolbar">
-  <form method="get" action="/">
-    <select name="country">
-      <option value="">All countries</option>
-      {% for code, c in countries.items() %}
-        <option value="{{ code }}" {% if filters.country == code %}selected{% endif %}>{{ c.flag if c.flag else '' }} {{ c.name }} ({{ c.dial_code }})</option>
-      {% endfor %}
-    </select>
-    <select name="category">
-      <option value="">All roles</option>
-      {% for key, cat in categories.items() %}
-        <option value="{{ key }}" {% if filters.category == key %}selected{% endif %}>{{ cat.english_label }}</option>
-      {% endfor %}
-    </select>
-    <select name="status">
-      <option value="">Any status</option>
-      <option value="new"      {% if filters.status == 'new' %}selected{% endif %}>New</option>
-      <option value="saved"    {% if filters.status == 'saved' %}selected{% endif %}>Saved</option>
-      <option value="applied"  {% if filters.status == 'applied' %}selected{% endif %}>Applied</option>
-      <option value="rejected" {% if filters.status == 'rejected' %}selected{% endif %}>Rejected</option>
-    </select>
-    <button type="submit">Filter</button>
-  </form>
+  <form id="filterForm" method="get" action="/">
+    <div class="toolbar-row">
+      <div class="filter-group" style="max-height:280px;min-width:340px;">
+        <h4>
+          Countries
+          <a id="selectAllCountries">select all</a>
+          <a id="clearCountries" style="margin-left:8px;">clear</a>
+        </h4>
+        {% for code, c in countries.items() %}
+        <label class="checkbox-row">
+          <input type="checkbox" name="country_cb" value="{{ code }}"
+                 {% if code in filters.country_list %}checked{% endif %}>
+          <span class="flag">{{ {'RS':'🇷🇸','BA':'🇧🇦','ME':'🇲🇪','BG':'🇧🇬','RO':'🇷🇴','MK':'🇲🇰','LV':'🇱🇻','LT':'🇱🇹','AT':'🇦🇹','BE':'🇧🇪','HR':'🇭🇷','CY':'🇨🇾','CZ':'🇨🇿','DK':'🇩🇰','EE':'🇪🇪','FI':'🇫🇮','FR':'🇫🇷','DE':'🇩🇪','GR':'🇬🇷','HU':'🇭🇺','IE':'🇮🇪','IT':'🇮🇹','LU':'🇱🇺','MT':'🇲🇹','NL':'🇳🇱','PL':'🇵🇱','PT':'🇵🇹','SK':'🇸🇰','SI':'🇸🇮','ES':'🇪🇸','SE':'🇸🇪'}.get(code, '🌍') }}</span>
+          <span>{{ c.name }}</span>
+          <span class="dial">{{ c.dial_code }}</span>
+          {% if not c.in_eu %}<span class="dial" style="color:#f59e0b">(non-EU)</span>{% endif %}
+        </label>
+        {% endfor %}
+      </div>
 
-  <form method="post" action="/api/scan/now" id="scanForm" style="margin-left:auto;">
-    <button class="primary" type="submit">⚡ Scan now</button>
+      <div class="filter-group" style="min-width:240px;">
+        <h4>
+          Roles
+          <a id="selectAllCategories">select all</a>
+        </h4>
+        {% for key, cat in categories.items() %}
+        <label class="checkbox-row">
+          <input type="checkbox" name="category_cb" value="{{ key }}"
+                 {% if key in filters.category_list %}checked{% endif %}>
+          <span>{{ cat.english_label }}</span>
+        </label>
+        {% endfor %}
+
+        <h4 style="margin-top:10px;">Status</h4>
+        <select name="status">
+          <option value="" {% if not filters.status %}selected{% endif %}>Any status</option>
+          <option value="new"      {% if filters.status == 'new' %}selected{% endif %}>New</option>
+          <option value="saved"    {% if filters.status == 'saved' %}selected{% endif %}>Saved</option>
+          <option value="applied"  {% if filters.status == 'applied' %}selected{% endif %}>Applied</option>
+          <option value="rejected" {% if filters.status == 'rejected' %}selected{% endif %}>Rejected</option>
+        </select>
+      </div>
+
+      <div style="margin-left:auto;display:flex;flex-direction:column;gap:8px;align-items:flex-end;">
+        <div style="display:flex;gap:8px;">
+          <button class="secondary" type="submit">🔍 Filter</button>
+          <button class="primary" type="button" id="scanBtn">⚡ Scan now</button>
+        </div>
+        <div class="scan-info" id="scanInfo">
+          Scheduled scans: 8 AM + 8 PM (Cairo). Real-time Telegram ON.
+        </div>
+      </div>
+    </div>
   </form>
 </div>
 
@@ -172,7 +264,7 @@
   {% for job in jobs %}
     <tr>
       <td>
-        <div class="flag">{{ {'RS':'🇷🇸','BA':'🇧🇦','ME':'🇲🇪','BG':'🇧🇬','RO':'🇷🇴','MK':'🇲🇰','LV':'🇱🇻','LT':'🇱🇹'}.get(job.country_code, '🌍') }}</div>
+        <div class="flag">{{ {'RS':'🇷🇸','BA':'🇧🇦','ME':'🇲🇪','BG':'🇧🇬','RO':'🇷🇴','MK':'🇲🇰','LV':'🇱🇻','LT':'🇱🇹','AT':'🇦🇹','BE':'🇧🇪','HR':'🇭🇷','CY':'🇨🇾','CZ':'🇨🇿','DK':'🇩🇰','EE':'🇪🇪','FI':'🇫🇮','FR':'🇫🇷','DE':'🇩🇪','GR':'🇬🇷','HU':'🇭🇺','IE':'🇮🇪','IT':'🇮🇹','LU':'🇱🇺','MT':'🇲🇹','NL':'🇳🇱','PL':'🇵🇱','PT':'🇵🇹','SK':'🇸🇰','SI':'🇸🇮','ES':'🇪🇸','SE':'🇸🇪'}.get(job.country_code, '🌍') }}</div>
         <div style="font-size:11px;color:#718096">{{ job.country_name }}</div>
       </td>
       <td>
@@ -183,7 +275,7 @@
       </td>
       <td>
         <div class="summary">
-          {% if job.ad_summary_en %}{{ job.ad_summary_en }}{% else %}{{ job.title }}{% endif %}
+          {% if job.ad_summary_en and job.ad_summary_en != '(analysis failed)' %}{{ job.ad_summary_en }}{% else %}{{ job.title }}{% endif %}
         </div>
         <div class="meta">
           {% if job.company %}{{ job.company }} • {% endif %}
@@ -207,7 +299,7 @@
       </td>
       <td>
         <div>{{ job.portal_name }}</div>
-        <div class="meta">{{ job.discovered_at[:10] }}</div>
+        <div class="meta">{{ job.discovered_at[:10] if job.discovered_at else '' }}</div>
       </td>
       <td>
         <select onchange="updateStatus({{ job.id }}, this.value)" class="status-pill status-{{ job.status }}">
@@ -227,38 +319,74 @@
 
 {% if jobs|length == 0 %}
 <div class="empty">
-  <p>No jobs found yet.</p>
-  <p>Click <b>⚡ Scan now</b> above to fetch fresh listings, or wait for the twice-daily scheduled scan.</p>
+  <p>No jobs found for your current filters.</p>
+  <p>Pick countries above and click <b>⚡ Scan now</b>, or wait for the next scheduled scan.</p>
 </div>
 {% endif %}
 
 <div class="toast" id="toast"></div>
 
 <script>
-// Scan form: send via fetch instead of full page reload
-document.getElementById('scanForm').addEventListener('submit', async (e) => {
+// Submit form: combine checkboxes into comma-separated hidden params
+document.getElementById('filterForm').addEventListener('submit', (e) => {
   e.preventDefault();
-  showToast('Scan started — this will take a few minutes. Page will refresh automatically.');
+  const countries = Array.from(document.querySelectorAll('input[name=country_cb]:checked'))
+                         .map(cb => cb.value).join(',');
+  const categories = Array.from(document.querySelectorAll('input[name=category_cb]:checked'))
+                          .map(cb => cb.value).join(',');
+  const status = document.querySelector('select[name=status]').value;
+
+  const params = new URLSearchParams();
+  if (countries)  params.set('country', countries);
+  if (categories) params.set('category', categories);
+  if (status)     params.set('status', status);
+  window.location.href = '/?' + params.toString();
+});
+
+document.getElementById('selectAllCountries').addEventListener('click', () => {
+  document.querySelectorAll('input[name=country_cb]').forEach(cb => cb.checked = true);
+});
+document.getElementById('clearCountries').addEventListener('click', () => {
+  document.querySelectorAll('input[name=country_cb]').forEach(cb => cb.checked = false);
+});
+document.getElementById('selectAllCategories').addEventListener('click', () => {
+  document.querySelectorAll('input[name=category_cb]').forEach(cb => cb.checked = true);
+});
+
+// Scan now: collect checked countries + categories and POST
+document.getElementById('scanBtn').addEventListener('click', async () => {
+  const countries = Array.from(document.querySelectorAll('input[name=country_cb]:checked'))
+                         .map(cb => cb.value).join(',');
+  const categories = Array.from(document.querySelectorAll('input[name=category_cb]:checked'))
+                          .map(cb => cb.value).join(',');
+  const params = new URLSearchParams();
+  if (countries)  params.set('country', countries);
+  if (categories) params.set('category', categories);
+
+  showToast(`Scan started for: ${countries ? countries : 'all countries'} / ${categories ? categories : 'all roles'}. Watch your Telegram!`, false);
+
   try {
-    await fetch('/api/scan/now', { method: 'POST' });
-    // Refresh after a delay to show progress
-    setTimeout(() => location.reload(), 60000);
+    const resp = await fetch('/api/scan/now?' + params.toString(), { method: 'POST' });
+    const data = await resp.json();
+    console.log('Scan response:', data);
+    // Auto-refresh the dashboard after a delay to show new jobs
+    setTimeout(() => location.reload(), 90000);
   } catch (err) {
-    showToast('Scan failed to start: ' + err.message);
+    showToast('Scan failed: ' + err.message, true);
   }
 });
 
 async function updateStatus(jobId, status) {
   await fetch(`/api/job/${jobId}/status?status=${status}`, { method: 'POST' });
   showToast(`Job #${jobId} marked as ${status}`);
-  location.reload();
 }
 
-function showToast(msg) {
+function showToast(msg, isError) {
   const t = document.getElementById('toast');
   t.textContent = msg;
+  t.classList.toggle('error', !!isError);
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 4000);
+  setTimeout(() => t.classList.remove('show'), 5000);
 }
 </script>
 

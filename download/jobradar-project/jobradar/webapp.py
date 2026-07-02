@@ -56,12 +56,31 @@ async def _shutdown():
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
-    country: Optional[str] = None,
-    category: Optional[str] = None,
+    country: Optional[str] = None,    # comma-separated, e.g. "RS,BG,RO"
+    category: Optional[str] = None,   # comma-separated
     status: Optional[str] = None,
 ):
     init_db()
-    jobs = list_jobs(country=country, category=category, status=status, limit=300)
+    # Parse comma-separated country filter
+    country_codes = None
+    if country:
+        country_codes = [c.strip().upper() for c in country.split(",") if c.strip()]
+        country_codes = [c for c in country_codes if c in COUNTRIES] or None
+
+    # Parse comma-separated category filter
+    category_keys = None
+    if category:
+        category_keys = [c.strip().lower() for c in category.split(",") if c.strip()]
+        category_keys = [c for c in category_keys if c in CATEGORIES] or None
+
+    # Pull jobs from DB (we filter the combined set; for performance we just query all
+    # and filter in Python — fine for a few hundred jobs)
+    all_jobs = list_jobs(limit=1000)
+    jobs = [j for j in all_jobs
+            if (not country_codes or j["country_code"] in country_codes)
+            and (not category_keys or j["category"] in category_keys)
+            and (not status or j["status"] == status)][:300]
+
     stats = count_jobs()
     return templates.TemplateResponse(
         "dashboard.html",
@@ -70,8 +89,13 @@ async def dashboard(
             "jobs": jobs,
             "countries": COUNTRIES,
             "categories": CATEGORIES,
-            "filters": {"country": country or "", "category": category or "",
-                        "status": status or ""},
+            "filters": {
+                "country": country or "",
+                "country_list": country_codes or [],
+                "category": category or "",
+                "category_list": category_keys or [],
+                "status": status or "",
+            },
             "stats": stats,
         },
     )
@@ -83,13 +107,27 @@ async def dashboard(
 
 @app.post("/api/scan/now")
 async def api_scan_now(background_tasks: BackgroundTasks,
-                       country: Optional[str] = None,
-                       category: Optional[str] = None):
-    """Trigger an on-demand scan as a background task."""
-    countries = [country] if country else None
-    categories = [category] if category else None
+                       country: Optional[str] = None,    # comma-separated
+                       category: Optional[str] = None):   # comma-separated
+    """Trigger an on-demand scan as a background task.
+    country and category accept comma-separated lists, e.g. "RS,BG,RO".
+    Empty means scan all."""
+    countries = None
+    if country:
+        countries = [c.strip().upper() for c in country.split(",") if c.strip()]
+        countries = [c for c in countries if c in COUNTRIES] or None
+
+    categories = None
+    if category:
+        categories = [c.strip().lower() for c in category.split(",") if c.strip()]
+        categories = [c for c in categories if c in CATEGORIES] or None
+
     background_tasks.add_task(run_scan_and_pipeline, countries, categories)
-    return {"status": "scan_started", "country": country, "category": category}
+    return {
+        "status": "scan_started",
+        "countries": countries or "all",
+        "categories": categories or "all",
+    }
 
 
 @app.get("/api/jobs")

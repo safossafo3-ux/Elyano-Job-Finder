@@ -26,6 +26,7 @@ from ..config import settings, COUNTRIES, CATEGORIES, _default_screenshots_dir
 from ..database import (
     upsert_job, log_scan_start, log_scan_finish, count_jobs
 )
+from ..pipeline import analyze_and_notify_single
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +400,16 @@ async def scrape_country_category(
                     is_new = upsert_job(job)
                     if is_new:
                         total_new += 1
+                        # Real-time analyze + notify (sends Telegram instantly)
+                        try:
+                            res = await analyze_and_notify_single(
+                                country_code,
+                                detail.get("full_text") or detail.get("title") or "",
+                                link,
+                            )
+                            logger.info(f"    ↳ realtime {link[:60]}… → {res['status']}")
+                        except Exception as e:
+                            logger.warning(f"    ↳ realtime analyze failed for {link}: {e}")
 
                 log_scan_finish(scan_id, len(links), total_new, "")
             except Exception as e:

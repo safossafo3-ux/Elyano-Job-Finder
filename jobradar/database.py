@@ -135,6 +135,12 @@ def mark_job_notified(job_id: int):
         )
 
 
+def get_job_by_url(url: str) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE url=?", (url,)).fetchone()
+        return dict(row) if row else None
+
+
 def get_unnotified_eligible_jobs(limit: int = 50) -> List[Dict[str, Any]]:
     with get_conn() as conn:
         rows = conn.execute(
