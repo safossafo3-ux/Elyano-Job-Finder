@@ -153,9 +153,24 @@ CATEGORIES: Dict[str, JobCategory] = {
 # Settings (loaded from env)
 # ---------------------------------------------------------------------------
 
+def _project_root() -> str:
+    """Return the directory that contains the `jobradar` package folder.
+    Works on Windows, Mac, Linux, and regardless of where you launch from."""
+    # config.py lives in <root>/jobradar/config.py  →  go up 2 levels
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _default_db_path() -> str:
+    return os.path.join(_project_root(), "jobradar.db")
+
+
+def _default_screenshots_dir() -> str:
+    return os.path.join(_project_root(), "download", "screenshots")
+
+
 class Settings:
-    # Database
-    DATABASE_PATH: str = os.getenv("DATABASE_PATH", "/home/z/my-project/jobradar.db")
+    # Database (default: project_root/jobradar.db — works on Windows/Mac/Linux)
+    DATABASE_PATH: str = os.getenv("DATABASE_PATH", _default_db_path())
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")

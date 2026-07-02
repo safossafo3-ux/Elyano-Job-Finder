@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config import settings, COUNTRIES, CATEGORIES
+from .config import settings, COUNTRIES, CATEGORIES, _project_root
 from .database import (
     init_db, list_jobs, get_job, set_job_status, count_jobs,
 )
@@ -27,16 +27,15 @@ from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = "/home/z/my-project"
-templates = Jinja2Templates(directory=f"{BASE_DIR}/templates")
+BASE_DIR = _project_root()
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 app = FastAPI(title="JobRadar", version="0.1.0")
 
 # Mount static dir (for any CSS/JS later)
-try:
-    app.mount("/static", StaticFiles(directory=f"{BASE_DIR}/static"), name="static")
-except RuntimeError:
-    pass  # static dir might be empty
+_static_dir = os.path.join(BASE_DIR, "static")
+os.makedirs(_static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
 @app.on_event("startup")

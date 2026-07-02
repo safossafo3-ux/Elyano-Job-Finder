@@ -22,7 +22,7 @@ from urllib.parse import quote, urljoin
 
 from playwright.async_api import async_playwright, Page, TimeoutError as PWTimeout
 
-from ..config import settings, COUNTRIES, CATEGORIES
+from ..config import settings, COUNTRIES, CATEGORIES, _default_screenshots_dir
 from ..database import (
     upsert_job, log_scan_start, log_scan_finish, count_jobs
 )
@@ -192,7 +192,7 @@ def get_selectors(country_code: str, portal_name: str) -> Dict[str, str]:
 # Screenshot path helpers
 # ---------------------------------------------------------------------------
 
-SCREENSHOTS_DIR = "/home/z/my-project/download/screenshots"
+SCREENSHOTS_DIR = _default_screenshots_dir()
 
 
 def screenshot_path_for(url: str) -> str:
