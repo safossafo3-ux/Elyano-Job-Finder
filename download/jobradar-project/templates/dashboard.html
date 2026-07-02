@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>JobRadar — Eastern Europe Job Scout</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #0f1419;
+    color: #e6e6e6;
+    margin: 0;
+    padding: 0;
+  }
+  header {
+    background: #1a202c;
+    border-bottom: 1px solid #2d3748;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { margin: 0; font-size: 20px; color: #fbbf24; }
+  header .stats { font-size: 13px; color: #a0aec0; }
+  header .stats span { margin-left: 12px; }
+  header .stats b { color: #4ade80; }
+
+  .toolbar {
+    background: #1a202c;
+    padding: 10px 24px;
+    border-bottom: 1px solid #2d3748;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .toolbar form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  select, button, input {
+    background: #2d3748;
+    color: #e6e6e6;
+    border: 1px solid #4a5568;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  button.primary {
+    background: #fbbf24;
+    color: #1a202c;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+  }
+  button.primary:hover { background: #f59e0b; }
+  a { color: #60a5fa; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid #2d3748;
+    vertical-align: top;
+  }
+  th {
+    background: #1a202c;
+    color: #a0aec0;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    position: sticky;
+    top: 0;
+  }
+  tr:hover td { background: #1f2937; }
+  .flag { font-size: 16px; }
+  .phone { font-family: monospace; color: #4ade80; font-weight: 600; }
+  .no-phone { color: #718096; font-style: italic; }
+  .status-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .status-new      { background: #1e3a8a; color: #bfdbfe; }
+  .status-saved    { background: #78350f; color: #fde68a; }
+  .status-applied  { background: #14532d; color: #bbf7d0; }
+  .status-rejected { background: #7f1d1d; color: #fecaca; }
+
+  .summary { color: #d1d5db; max-width: 480px; }
+  .meta { color: #718096; font-size: 11px; margin-top: 3px; }
+  .empty {
+    padding: 40px;
+    text-align: center;
+    color: #718096;
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: #14532d;
+    color: #bbf7d0;
+    padding: 12px 18px;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.3);
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all .3s;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📡 JobRadar</h1>
+  <div class="stats">
+    <span>Total jobs: <b>{{ stats.total }}</b></span>
+    <span>Eligible: <b>{{ stats.eligible }}</b></span>
+    <span>Unnotified: <b>{{ stats.unnotified }}</b></span>
+  </div>
+</header>
+
+<div class="toolbar">
+  <form method="get" action="/">
+    <select name="country">
+      <option value="">All countries</option>
+      {% for code, c in countries.items() %}
+        <option value="{{ code }}" {% if filters.country == code %}selected{% endif %}>{{ c.flag if c.flag else '' }} {{ c.name }} ({{ c.dial_code }})</option>
+      {% endfor %}
+    </select>
+    <select name="category">
+      <option value="">All roles</option>
+      {% for key, cat in categories.items() %}
+        <option value="{{ key }}" {% if filters.category == key %}selected{% endif %}>{{ cat.english_label }}</option>
+      {% endfor %}
+    </select>
+    <select name="status">
+      <option value="">Any status</option>
+      <option value="new"      {% if filters.status == 'new' %}selected{% endif %}>New</option>
+      <option value="saved"    {% if filters.status == 'saved' %}selected{% endif %}>Saved</option>
+      <option value="applied"  {% if filters.status == 'applied' %}selected{% endif %}>Applied</option>
+      <option value="rejected" {% if filters.status == 'rejected' %}selected{% endif %}>Rejected</option>
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+
+  <form method="post" action="/api/scan/now" id="scanForm" style="margin-left:auto;">
+    <button class="primary" type="submit">⚡ Scan now</button>
+  </form>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Country</th>
+      <th>Role</th>
+      <th>Summary</th>
+      <th>Phone</th>
+      <th>Source</th>
+      <th>Status</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for job in jobs %}
+    <tr>
+      <td>
+        <div class="flag">{{ {'RS':'🇷🇸','BA':'🇧🇦','ME':'🇲🇪','BG':'🇧🇬','RO':'🇷🇴','MK':'🇲🇰','LV':'🇱🇻','LT':'🇱🇹'}.get(job.country_code, '🌍') }}</div>
+        <div style="font-size:11px;color:#718096">{{ job.country_name }}</div>
+      </td>
+      <td>
+        {% if job.category == 'courier' %}🛵 Courier
+        {% elif job.category == 'construction' %}🏗️ Construction
+        {% elif job.category == 'factory' %}🏭 Factory
+        {% else %}{{ job.category }}{% endif %}
+      </td>
+      <td>
+        <div class="summary">
+          {% if job.ad_summary_en %}{{ job.ad_summary_en }}{% else %}{{ job.title }}{% endif %}
+        </div>
+        <div class="meta">
+          {% if job.company %}{{ job.company }} • {% endif %}
+          <a href="{{ job.url }}" target="_blank">original ad ↗</a>
+        </div>
+        {% if job.screenshot_path %}
+        <div class="meta">
+          <a href="/screenshot/{{ job.id }}" target="_blank">📷 view screenshot</a>
+        </div>
+        {% endif %}
+        {% if job.rejects_foreigners %}
+        <div class="meta" style="color:#f87171">⚠️ Ad rejects foreigners — skipped notification</div>
+        {% endif %}
+      </td>
+      <td>
+        {% if job.phone_normalized %}
+          <div class="phone">{{ job.phone_normalized }}</div>
+        {% else %}
+          <div class="no-phone">—</div>
+        {% endif %}
+      </td>
+      <td>
+        <div>{{ job.portal_name }}</div>
+        <div class="meta">{{ job.discovered_at[:10] }}</div>
+      </td>
+      <td>
+        <select onchange="updateStatus({{ job.id }}, this.value)" class="status-pill status-{{ job.status }}">
+          <option value="new"      {% if job.status == 'new' %}selected{% endif %}>New</option>
+          <option value="saved"    {% if job.status == 'saved' %}selected{% endif %}>Saved</option>
+          <option value="applied"  {% if job.status == 'applied' %}selected{% endif %}>Applied</option>
+          <option value="rejected" {% if job.status == 'rejected' %}selected{% endif %}>Rejected</option>
+        </select>
+      </td>
+      <td>
+        <button onclick="window.open('{{ job.url }}', '_blank')">Open</button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if jobs|length == 0 %}
+<div class="empty">
+  <p>No jobs found yet.</p>
+  <p>Click <b>⚡ Scan now</b> above to fetch fresh listings, or wait for the twice-daily scheduled scan.</p>
+</div>
+{% endif %}
+
+<div class="toast" id="toast"></div>
+
+<script>
+// Scan form: send via fetch instead of full page reload
+document.getElementById('scanForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showToast('Scan started — this will take a few minutes. Page will refresh automatically.');
+  try {
+    await fetch('/api/scan/now', { method: 'POST' });
+    // Refresh after a delay to show progress
+    setTimeout(() => location.reload(), 60000);
+  } catch (err) {
+    showToast('Scan failed to start: ' + err.message);
+  }
+});
+
+async function updateStatus(jobId, status) {
+  await fetch(`/api/job/${jobId}/status?status=${status}`, { method: 'POST' });
+  showToast(`Job #${jobId} marked as ${status}`);
+  location.reload();
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 4000);
+}
+</script>
+
+</body>
+</html>
