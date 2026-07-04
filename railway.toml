@@ -1,6 +1,7 @@
 [deploy]
+# No healthcheckPath — let Railway use the default TCP check (is PORT open?).
+# HTTP healthchecks were intermittently failing on Railway due to slow
+# Playwright/Chromium cold start, causing 502 with x-railway-fallback: true.
 startCommand = "python run.py"
-healthcheckPath = "/health"
-healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
