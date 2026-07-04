@@ -30,3 +30,17 @@ Thumbs.db
 # Playwright
 playwright-report/
 test-results/
+
+# Sandbox-only dirs (not part of the project)
+skills/
+upload/
+scripts/
+worklog.md
+worklog/
+agent-ctx/
+
+# Databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
