@@ -217,6 +217,12 @@ async def api_stats():
     return count_jobs()
 
 
+@app.get("/health")
+async def health():
+    """Lightweight healthcheck — no DB access. Railway hits this every few seconds."""
+    return {"status": "ok"}
+
+
 @app.get("/api/diagnostics")
 async def api_diagnostics():
     def mask(v):

@@ -21,9 +21,8 @@ RUN playwright install chromium
 # Copy app
 COPY . .
 
-# Default port Railway expects
-ENV WEBAPP_PORT=8000
-EXPOSE 8000
+# Railway injects PORT at runtime; we don't hardcode it here.
+# Locally, config.py defaults to 8000 if neither PORT nor WEBAPP_PORT is set.
 
 # Run
 CMD ["python", "run.py"]

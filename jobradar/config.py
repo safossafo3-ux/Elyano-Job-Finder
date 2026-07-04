@@ -402,7 +402,8 @@ class Settings:
     REALTIME_NOTIFY: bool = os.getenv("REALTIME_NOTIFY", "true").lower() == "true"
 
     WEBAPP_HOST: str = os.getenv("WEBAPP_HOST", "0.0.0.0")
-    WEBAPP_PORT: int = int(os.getenv("WEBAPP_PORT", "8000"))
+    # Railway injects a dynamic PORT; honor it first, fall back to WEBAPP_PORT, then 8000.
+    WEBAPP_PORT: int = int(os.getenv("PORT") or os.getenv("WEBAPP_PORT") or "8000")
 
     SESSION_SECRET: str = os.getenv("SESSION_SECRET", "change-me-in-production")
 
