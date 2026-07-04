@@ -1,19 +1,19 @@
 """
-Pipeline that:
-  1. (Real-time) analyzes + notifies each new job the moment it's discovered
-  2. (Fallback batch) analyzes + notifies any older jobs that slipped through
+Pipeline — multi-user edition.
+  - Real-time analyze + notify per-user when a job is discovered
+  - Batch fallback for stragglers
 """
 
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from .database import (
-    get_unanalyzed_jobs, update_job_analysis, mark_job_notified,
-    get_unnotified_eligible_jobs, get_job_by_url,
+    get_job_by_url, update_job_analysis, mark_job_notified_for_user,
+    get_unnotified_jobs_for_user, list_users,
 )
 from .llm import analyze_ad, normalize_phone
-from .telegram_bot import notify_job
+from .telegram_bot import notify_job, send_text
 from .config import COUNTRIES, settings
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,9 @@ FOREIGNER_PHRASES = [
     "solo ciudadanos", "solo nacionales", "alleen voor burgers",
     "kun for borgere", "endast medborgare", "vain kansalaiset",
     "ainult kodanikud", "csak magyar", "numai cetateni",
+    "nur inländische", "ustaalizao", "réservé",
+    "egyptians only", "saudi nationals only", "qatari nationals",
+    "uae nationals only", "gcc nationals",
 ]
 
 
@@ -37,16 +40,13 @@ def defensive_foreigners_check(text: str) -> bool:
     return any(p in t for p in FOREIGNER_PHRASES)
 
 
-# ---------------------------------------------------------------------------
-# Real-time per-job analysis + notification
-# ---------------------------------------------------------------------------
-
-async def analyze_and_notify_single(country_code: str, ad_text: str,
-                                    job_url: str) -> Dict[str, Any]:
-    """
-    Analyze one freshly-scraped job and (if eligible) immediately notify Telegram.
-    Returns a small status dict for logging.
-    """
+async def analyze_and_notify_single(
+    country_code: str,
+    ad_text: str,
+    job_url: str,
+    user_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Analyze a job, then notify all users (or specific user) who should see it."""
     if not ad_text:
         return {"status": "skip", "reason": "empty text"}
 
@@ -86,65 +86,66 @@ async def analyze_and_notify_single(country_code: str, ad_text: str,
     )
 
     if result.get("is_relevant") is False:
-        mark_job_notified(job["id"])
         return {"status": "irrelevant"}
 
     if rejects:
         return {"status": "rejected_foreigners"}
 
-    # Real-time Telegram notification
-    if settings.REALTIME_NOTIFY and settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
-        job = get_job_by_url(job_url)  # refresh to get analyzed fields
-        ok = await notify_job(job)
-        if ok:
-            mark_job_notified(job["id"])
-            return {"status": "notified"}
-        return {"status": "notify_failed"}
-    else:
-        return {"status": "analyzed_not_notified"}
+    # Notify the triggering user (if any) + admin
+    notified_count = 0
+    if settings.REALTIME_NOTIFY:
+        # Refresh job from DB to get analyzed fields
+        job = get_job_by_url(job_url)
+
+        targets = []
+        if user_id:
+            # Notify the user who triggered the scan
+            for u in list_users():
+                if u["id"] == user_id:
+                    targets.append(u)
+                    break
+        else:
+            # Scheduled scan — notify all users
+            targets = list_users()
+
+        # Also notify the admin fallback chat
+        admin_chat = settings.TELEGRAM_CHAT_ID
+        if admin_chat and not any(str(u["telegram_chat_id"]) == str(admin_chat) for u in targets):
+            # Send to admin directly
+            ok = await notify_job(job, admin_chat)
+            if ok:
+                notified_count += 1
+
+        for u in targets:
+            ok = await notify_job(job, u["telegram_chat_id"])
+            if ok:
+                mark_job_notified_for_user(u["id"], job["id"])
+                notified_count += 1
+            await asyncio.sleep(0.8)  # Telegram rate limit safety
+
+    return {"status": "notified", "count": notified_count} if notified_count else {"status": "analyzed_not_notified"}
 
 
-# ---------------------------------------------------------------------------
-# Batch fallback (used by scheduled runs to clean up stragglers)
-# ---------------------------------------------------------------------------
-
-async def analyze_pending_jobs(limit: int = 100) -> int:
-    jobs = get_unanalyzed_jobs(limit=limit)
-    if not jobs:
-        return 0
-    success = 0
-    for job in jobs:
-        cc = job["country_code"]
-        ad_text = job.get("full_text") or job.get("title") or ""
-        if not ad_text:
-            continue
-        res = await analyze_and_notify_single(cc, ad_text, job["url"])
-        if res["status"] in {"notified", "analyzed_not_notified"}:
-            success += 1
-        await asyncio.sleep(0.3)
-    return success
-
-
-async def notify_pending_jobs(limit: int = 30) -> int:
-    jobs = get_unnotified_eligible_jobs(limit=limit)
+async def notify_pending_for_user(user_id: int, limit: int = 30) -> int:
+    """Send pending notifications to a specific user."""
+    from .database import get_unnotified_jobs_for_user
+    jobs = get_unnotified_jobs_for_user(user_id, limit=limit)
     if not jobs:
         return 0
     sent = 0
     for job in jobs:
-        ok = await notify_job(job)
+        ok = await notify_job(job, user_chat_id_override=None)
         if ok:
-            mark_job_notified(job["id"])
+            mark_job_notified_for_user(user_id, job["id"])
             sent += 1
             await asyncio.sleep(1.0)
     return sent
 
 
 async def run_pipeline():
-    """Batch fallback: analyze → notify (cleans up any stragglers)."""
-    logger.info("Pipeline (batch): analyzing pending jobs…")
-    analyzed = await analyze_pending_jobs()
-    logger.info(f"Pipeline (batch): analyzed {analyzed} jobs.")
-    logger.info("Pipeline (batch): sending Telegram notifications…")
-    sent = await notify_pending_jobs()
-    logger.info(f"Pipeline (batch): sent {sent} notifications.")
-    return {"analyzed": analyzed, "notified": sent}
+    """Batch fallback: notify all users of pending jobs."""
+    sent_total = 0
+    for user in list_users():
+        sent_total += await notify_pending_for_user(user["id"])
+    logger.info(f"Pipeline (batch): sent {sent_total} notifications.")
+    return {"notified": sent_total}

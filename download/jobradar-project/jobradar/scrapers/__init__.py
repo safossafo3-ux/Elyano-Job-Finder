@@ -1,2 +1,2 @@
-"""Scrapers package."""
-from .base import BaseScraper, scrape_country_category, scrape_all
+"""Scrapers package — global edition."""
+from .base import scrape_country_category, scrape_all

@@ -68,7 +68,7 @@ async def analyze_ad(country_code: str, ad_text: str) -> Optional[Dict[str, Any]
     prompt = PROMPT_TEMPLATE.format(
         country_name=country.name,
         dial_code=country.dial_code,
-        tld=country.tld,
+        tld="",  # not used in this version
         language=country.language,
         ad_text=truncated,
     )

@@ -1,41 +1,45 @@
-# JobRadar 📡
+# JobRadar 📡 Global
 
-Autonomous job scout for **Eastern Europe** (Serbia, Bosnia, Montenegro, Bulgaria, Romania, North Macedonia, Latvia, Lithuania).
+Autonomous job scout for **80 countries** across **9 regions**. Real-time Telegram alerts. Multi-user.
 
-The bot surfs public job portals in each country's local language, looks for **courier (Glovo/Wolt/Bolt/Tazz)**, **construction**, and **factory** jobs, screens out ads that explicitly reject foreigners, and sends you a **Telegram message** with:
+## What it does
 
-- 📷 screenshot of the ad
-- 🇬🇧 one-line English summary
-- 📞 employer phone number (normalized with the country dial code)
-- 🔗 link to the original ad
-
-Scans run **twice a day** (default 8 AM and 8 PM Cairo time) and can also be triggered **on-demand** from the dashboard.
-
----
+1. User opens dashboard → sees **9 region cards** (Europe, Russia & CIS, Middle East, Asia, Africa, North America, Latin America, Oceania, Balkans)
+2. Picks regions → countries appear with checkboxes
+3. Picks roles (🛵 Courier / 🏗️ Construction / 🏭 Factory)
+4. Clicks **⚡ Start search**
+5. Bot scrapes **Indeed** (40+ countries) and **DuckDuckGo** (for countries without Indeed)
+6. Each new job is analyzed by **Gemini** (translate, summarize, extract phone, detect "no foreigners")
+7. Eligible jobs are sent to the user's Telegram **in real time** with screenshot + English summary + phone
 
 ## Setup
 
-### 1. Install Python deps
+### 1. Install
 
 ```bash
-cd /home/z/my-project
+cd jobradar-project
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# or: source .venv/bin/activate  # Mac/Linux
 pip install -r requirements.txt
 playwright install chromium
 ```
 
 ### 2. Get API keys
 
-| Service | How to get it |
+| Key | How |
 |---|---|
-| **Telegram bot token** | Talk to [@BotFather](https://t.me/BotFather), create a bot, copy the token |
-| **Telegram chat_id** | Send any message to your new bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates` — look for `"chat":{"id":...}` |
-| **Gemini API key** | Free at https://aistudio.google.com/app/apikey |
+| `TELEGRAM_BOT_TOKEN` | Talk to [@BotFather](https://t.me/BotFather), `/newbot`, copy token |
+| `TELEGRAM_BOT_USERNAME` | The bot's @username (e.g. `MustafaJobRadar_bot`) — without the @ |
+| `TELEGRAM_CHAT_ID` | Send `/start` to your bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates` → copy your `chat.id` |
+| `GEMINI_API_KEY` | Free at https://aistudio.google.com/app/apikey |
+| `SESSION_SECRET` | Any random string (e.g. run `python -c "import secrets; print(secrets.token_hex(32))"`) |
 
-### 3. Configure env
+### 3. Configure
 
 ```bash
 cp .env.example .env
-# edit .env and fill in your keys
+# edit .env with your keys
 ```
 
 ### 4. Run
@@ -44,106 +48,117 @@ cp .env.example .env
 python run.py
 ```
 
-Open http://localhost:8000 in your browser.
+Open http://localhost:8000 → click **Login with Telegram** → send `/start` to your bot → enter the 6-digit code.
 
----
+## How user registration works
 
-## How it works
+1. User opens dashboard → clicks **Login with Telegram**
+2. Modal shows link to your bot + a code input field
+3. User clicks the link → Telegram opens → user sends `/start`
+4. Bot replies with a 6-digit code (valid 10 minutes)
+5. User enters the code on the dashboard → session cookie is set (30 days)
+6. Each user's scans + notifications are tracked per-user in the DB
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌───────────┐
-│  Scheduler  │───▶│   Scraper    │───▶│   Gemini    │───▶│  Telegram │
-│ (2x / day   │    │  Playwright  │    │  translate, │    │   sends   │
-│  + on-demand│    │  per country │    │  summarize, │    │  photo +  │
-│  button)    │    │  per portal  │    │  phone,     │    │  caption  │
-└─────────────┘    └──────────────┘    │  filter     │    │  to you   │
-                                        └─────────────┘    └───────────┘
-                                                │
-                                                ▼
-                                        ┌─────────────┐
-                                        │   SQLite    │
-                                        │  (jobs.db)  │
-                                        └─────────────┘
-                                                ▲
-                                                │
-                                        ┌─────────────┐
-                                        │  Dashboard  │
-                                        │  FastAPI    │
-                                        │  view/filter│
-                                        └─────────────┘
-```
-
----
-
-## Countries & phone codes
-
-| Country | TLD | Dial | Portals |
-|---|---|---|---|
-| 🇷🇸 Serbia | .rs | +381 | Infostud, HelloWorld, Joberty |
-| 🇧🇦 Bosnia | .ba | +387 | Poslovi.ba, MojPosao |
-| 🇲🇪 Montenegro | .me | +382 | Poslopi, Oglasi.me |
-| 🇧🇬 Bulgaria | .bg | +359 | Jobs.bg, Rabota.bg, JobOffer.bg |
-| 🇷🇴 Romania | .ro | +40 | EJobs, Hipo, BestJobs |
-| 🇲🇰 N. Macedonia | .mk | +389 | Kariera, Vrabotuvanje |
-| 🇱🇻 Latvia | .lv | +371 | CVmarket, CV.lv, SS.lv |
-| 🇱🇹 Lithuania | .lt | +370 | CVbankas, CV.lt, Darbas |
-
----
-
-## Legal & safe by design
-
-- ✅ Only **reads public** job ads — no login bypass, no employer outreach.
-- ✅ Sends messages only to **your own Telegram chat** — no spam.
-- ✅ Human-in-the-loop: the bot drafts alerts, **you** decide which to apply to.
-- ⚠️ Be polite: 2 scans/day + max 20 jobs/portal keeps you off anti-bot radars.
-
----
-
-## Customizing
-
-### Add or refine a portal's selectors
-
-Edit `jobradar/config.py` → `COUNTRIES` to add a portal, then add its CSS selectors in `jobradar/scrapers/base.py` → `PORTAL_SELECTORS`. If you don't add selectors, the generic fallback will be used.
-
-### Change scan frequency
-
-Edit `.env`:
-```
-SCAN_CRON_HOURS=6,12,18   # 3x/day
-```
-
-### Filter by a different role
-
-Add a new entry to `CATEGORIES` in `jobradar/config.py` with the keyword in each country's language.
-
----
+Multiple users can register; each gets notifications only for scans they trigger. Scheduled scans (8 AM + 8 PM) notify all registered users.
 
 ## Deploy to Railway
 
-1. Push this project to GitHub.
-2. Create a new Railway project from the repo.
-3. Set all env vars from `.env.example` in Railway's dashboard.
-4. Railway will auto-detect Python. Set the start command:
-   ```
-   python run.py
-   ```
-5. Railway auto-installs `requirements.txt`. You also need Playwright browsers — add a build script:
-   ```bash
-   playwright install chromium --with-deps
-   ```
-   (Add this to a `Procfile` or Railway build command.)
-6. Expose port 8000 (Railway does this automatically based on `WEBAPP_PORT`).
+### Option A: Connect GitHub (recommended)
 
----
+1. Push this project to GitHub:
+   ```bash
+   git init
+   git add .
+   git commit -m "Initial commit — JobRadar"
+   git branch -M main
+   git remote add origin https://github.com/YOUR_USERNAME/elyano-job-finder.git
+   git push -u origin main
+   ```
+2. Go to https://railway.app → New Project → Deploy from GitHub repo
+3. Pick your `elyano-job-finder` repo
+4. Railway auto-detects the Dockerfile → builds → deploys
+5. In Railway's **Variables** tab, add all env vars from `.env.example`
+6. Railway gives you a public URL like `https://elyano-job-finder.up.railway.app`
+7. Open that URL → log in with Telegram → start searching
+
+### Option B: Railway CLI
+
+```bash
+npm i -g @railway/cli
+railway login
+railway init
+railway up
+```
+
+## Architecture
+
+```
+                ┌─────────────────┐
+                │  FastAPI        │
+                │  dashboard      │
+                │  (frosted glass │
+                │   dark blue UI) │
+                └────────┬────────┘
+                         │
+                         ▼
+                ┌─────────────────┐    ┌─────────────┐
+                │  Scheduler      │───▶│  Scraper    │
+                │  (2x daily +    │    │  Playwright │
+                │   on-demand)    │    │  Indeed +   │
+                └─────────────────┘    │  DuckDuckGo │
+                         │              └──────┬──────┘
+                         │                     │
+                         ▼                     ▼
+                ┌─────────────────┐    ┌─────────────┐
+                │  Telegram bot   │◀───│  Gemini LLM │
+                │  (polling for   │    │  analyze +  │
+                │   /start +      │    │  translate  │
+                │   send alerts)  │    │  + phone    │
+                └─────────────────┘    └─────────────┘
+                         ▲
+                         │
+                ┌─────────────────┐
+                │  SQLite DB      │
+                │  (users, jobs,  │
+                │   notifications)│
+                └─────────────────┘
+```
+
+## Coverage
+
+| Region | Countries | Notes |
+|---|---|---|
+| Europe | 35 | EU 27 + UK, CH, NO, IS + Balkans 5 |
+| Russia & CIS | 6 | RU, UA, BY, MD, GE, AM |
+| Middle East | 8 | AE, SA, QA, KW, BH, OM, IL, JO |
+| Asia | 15 | JP, KR, CN, IN, PK, BD, SG, HK, MY, TH, PH, ID, VN, TW, LK |
+| Africa | 8 | ZA, EG, NG, KE, MA, TN, GH, ET |
+| North America | 3 | US, CA, MX |
+| Latin America | 8 | BR, AR, CL, CO, PE, CR, PA, UY |
+| Oceania | 2 | AU, NZ |
+| **Total** | **85** | |
+
+## Job sources
+
+- **Indeed** — primary source, covers 50+ countries with one HTML structure
+- **DuckDuckGo search** — fallback for countries without Indeed (searches LinkedIn + general web)
+
+## Legal & safe by design
+
+- ✅ Only reads public job ads
+- ✅ Sends messages only to users who **explicitly registered** via Telegram
+- ✅ Human-in-the-loop: bot drafts alerts, **you** decide which to apply to
+- ⚠️ Polite rate: 2 scans/day + max 15 jobs/portal keeps you under anti-bot radars
+- ⚠️ For personal use. If you open to many users, add rate limiting per user.
 
 ## Troubleshooting
 
-**Gemini returns 429** → Free tier rate limit. Reduce `MAX_JOBS_PER_PORTAL` or increase delay between requests in `pipeline.py`.
+**`GEMINI_API_KEY not set`** — `.env` not loaded. Run `pip install python-dotenv`. Check `/api/diagnostics`.
 
-**Telegram `chat not found`** → You haven't started a conversation with your bot yet. Send it `/start` first.
+**Telegram bot doesn't reply to `/start`** — Make sure the bot token is correct and the polling task is running. Check logs for `Telegram polling started`.
 
-**A portal returns 0 jobs** → Likely the CSS selectors changed. Open the portal in a browser, inspect a job link, and update `PORTAL_SELECTORS` in `scrapers/base.py`.
+**Indeed returns 0 jobs** — Indeed changes their HTML often. Update selectors in `jobradar/scrapers/base.py` → `scrape_indeed()`.
 
-**Playwright fails to launch** → Run `playwright install chromium` once.
+**Login code doesn't arrive** — Make sure you set `TELEGRAM_BOT_USERNAME` and that you sent `/start` to the bot from your Telegram account.
 
-**"no foreigners" filter missed an ad** → Gemini is the primary detector; add the ad's phrase to `FOREIGNER_PHRASES` in `pipeline.py` for a defensive regex backup.
+**"No chat_id to notify"** — Either you're not logged in (so scan has no target user) and admin chat isn't set, or your `.env` is missing `TELEGRAM_CHAT_ID`.
