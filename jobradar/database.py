@@ -99,7 +99,60 @@ CREATE TABLE IF NOT EXISTS scan_log (
     jobs_new INTEGER DEFAULT 0,
     error TEXT
 );
+
+-- Phase 2 tables
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    countries TEXT NOT NULL,        -- JSON list of country codes
+    categories TEXT NOT NULL,       -- JSON list of category keys
+    keywords TEXT,                  -- optional extra keywords
+    created_at TEXT NOT NULL,
+    last_run_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    job_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, job_id),
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    job_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'applied',  -- applied | interview | offer | rejected
+    applied_at TEXT NOT NULL,
+    notes TEXT,
+    UNIQUE(user_id, job_id),
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INTEGER PRIMARY KEY,
+    notify_telegram INTEGER DEFAULT 1,
+    notify_email INTEGER DEFAULT 0,
+    email TEXT,
+    min_salary TEXT,
+    max_commute_km INTEGER,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
 """
+
+# Migrations for existing databases (idempotent — safe to run multiple times)
+MIGRATIONS = [
+    "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+    "CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_id)",
+]
 
 
 @contextmanager
@@ -116,6 +169,11 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        for stmt in MIGRATIONS:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -378,3 +436,255 @@ def log_scan_finish(scan_id: int, jobs_found: int, jobs_new: int, error: str = "
             "UPDATE scan_log SET finished_at=?, jobs_found=?, jobs_new=?, error=? WHERE id=?",
             (datetime.utcnow().isoformat(), jobs_found, jobs_new, error, scan_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: username-based login + saved searches + favorites + applications
+# ---------------------------------------------------------------------------
+
+def register_telegram_user(telegram_user_id: int, telegram_chat_id: int,
+                           username: str = "", first_name: str = "") -> Dict[str, Any]:
+    """Called when user messages the bot. Creates/updates user record immediately
+    so they can log in by username later — no code flow needed."""
+    now = datetime.utcnow().isoformat()
+    # Normalize username: lowercase, strip leading @
+    if username:
+        username = username.lstrip("@").lower()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO users (telegram_user_id, telegram_chat_id, username, first_name, created_at, last_login_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(telegram_user_id) DO UPDATE SET
+                 telegram_chat_id=excluded.telegram_chat_id,
+                 username=COALESCE(NULLIF(excluded.username, ''), users.username),
+                 first_name=COALESCE(NULLIF(excluded.first_name, ''), users.first_name)""",
+            (telegram_user_id, telegram_chat_id, username or None, first_name or None, now, now)
+        )
+        row = conn.execute(
+            "SELECT * FROM users WHERE telegram_user_id=?", (telegram_user_id,)
+        ).fetchone()
+        return dict(row) if row else {}
+
+
+def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
+    """Look up a user by their Telegram username (case-insensitive, no leading @)."""
+    if not username:
+        return None
+    clean = username.strip().lstrip("@").lower()
+    if not clean:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE LOWER(username) = ?", (clean,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def create_session_for_user(user_id: int) -> str:
+    """Create a fresh session for an existing user. Returns the session token."""
+    now = datetime.utcnow().isoformat()
+    expires = (datetime.utcnow() + timedelta(days=30)).isoformat()
+    token = secrets.token_urlsafe(32)
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET last_login_at=? WHERE id=?", (now, user_id)
+        )
+        conn.execute(
+            """INSERT INTO user_sessions (session_token, user_id, created_at, expires_at)
+               VALUES (?, ?, ?, ?)""",
+            (token, user_id, now, expires)
+        )
+    return token
+
+
+# Saved searches ----------------------------------------------------------
+
+def create_saved_search(user_id: int, name: str, countries: List[str],
+                        categories: List[str], keywords: str = "") -> Dict[str, Any]:
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO saved_searches (user_id, name, countries, categories, keywords, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, name, json.dumps(countries), json.dumps(categories),
+             keywords or "", now)
+        )
+        sid = cur.lastrowid
+        return {"id": sid, "user_id": user_id, "name": name,
+                "countries": countries, "categories": categories,
+                "keywords": keywords, "created_at": now, "last_run_at": None}
+
+
+def list_saved_searches(user_id: int) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM saved_searches WHERE user_id=? ORDER BY created_at DESC",
+            (user_id,)
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["countries"] = json.loads(d.get("countries") or "[]")
+            d["categories"] = json.loads(d.get("categories") or "[]")
+            out.append(d)
+        return out
+
+
+def delete_saved_search(user_id: int, search_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM saved_searches WHERE id=? AND user_id=?",
+            (search_id, user_id)
+        )
+        return cur.rowcount > 0
+
+
+def touch_saved_search(search_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE saved_searches SET last_run_at=? WHERE id=?",
+            (datetime.utcnow().isoformat(), search_id)
+        )
+
+
+# Favorites ---------------------------------------------------------------
+
+def add_favorite(user_id: int, job_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO favorites (user_id, job_id, created_at) VALUES (?, ?, ?)",
+            (user_id, job_id, datetime.utcnow().isoformat())
+        )
+
+
+def remove_favorite(user_id: int, job_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM favorites WHERE user_id=? AND job_id=?",
+            (user_id, job_id)
+        )
+
+
+def list_favorites(user_id: int) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT j.*, f.created_at AS favorited_at
+               FROM favorites f
+               JOIN jobs j ON f.job_id = j.id
+               WHERE f.user_id=?
+               ORDER BY f.created_at DESC""",
+            (user_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def is_favorite(user_id: int, job_id: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM favorites WHERE user_id=? AND job_id=?",
+            (user_id, job_id)
+        ).fetchone()
+        return bool(row)
+
+
+# Applications ------------------------------------------------------------
+
+VALID_APP_STATUSES = {"applied", "interview", "offer", "rejected"}
+
+
+def upsert_application(user_id: int, job_id: int, status: str, notes: str = ""):
+    if status not in VALID_APP_STATUSES:
+        raise ValueError(f"Invalid status: {status}")
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO applications (user_id, job_id, status, applied_at, notes)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, job_id) DO UPDATE SET
+                 status=excluded.status,
+                 notes=COALESCE(NULLIF(excluded.notes, ''), applications.notes)""",
+            (user_id, job_id, status, now, notes)
+        )
+
+
+def remove_application(user_id: int, job_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM applications WHERE user_id=? AND job_id=?",
+            (user_id, job_id)
+        )
+
+
+def list_applications(user_id: int) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT j.*, a.status AS app_status, a.applied_at, a.notes AS app_notes
+               FROM applications a
+               JOIN jobs j ON a.job_id = j.id
+               WHERE a.user_id=?
+               ORDER BY a.applied_at DESC""",
+            (user_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# User settings -----------------------------------------------------------
+
+def get_user_settings(user_id: int) -> Dict[str, Any]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_settings WHERE user_id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            return {
+                "user_id": user_id,
+                "notify_telegram": True,
+                "notify_email": False,
+                "email": "",
+                "min_salary": "",
+                "max_commute_km": None,
+            }
+        d = dict(row)
+        d["notify_telegram"] = bool(d.get("notify_telegram"))
+        d["notify_email"] = bool(d.get("notify_email"))
+        return d
+
+
+def update_user_settings(user_id: int, **kwargs):
+    allowed = {"notify_telegram", "notify_email", "email", "min_salary", "max_commute_km"}
+    # Filter & normalize
+    cleaned = {}
+    for k, v in kwargs.items():
+        if k not in allowed:
+            continue
+        if k in ("notify_telegram", "notify_email"):
+            v = 1 if v else 0
+        if k == "max_commute_km" and v == "":
+            v = None
+        cleaned[k] = v
+    if not cleaned:
+        return
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        # First, ensure the row exists with defaults
+        conn.execute(
+            """INSERT OR IGNORE INTO user_settings
+               (user_id, notify_telegram, notify_email, email, min_salary, max_commute_km)
+               VALUES (?, 1, 0, '', '', NULL)""",
+            (user_id,)
+        )
+        # Then update only the fields provided
+        assignments = ", ".join(f"{k}=?" for k in cleaned)
+        values = list(cleaned.values()) + [user_id]
+        conn.execute(
+            f"UPDATE user_settings SET {assignments} WHERE user_id=?",
+            values
+        )
+
+
+# User profile helpers ----------------------------------------------------
+
+def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None

@@ -1,5 +1,6 @@
 """
-FastAPI dashboard + API — global edition with multi-user auth.
+FastAPI dashboard + API — Phase 2 with username login, saved searches,
+favorites, and application tracking.
 """
 
 import asyncio
@@ -12,12 +13,19 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Response, 
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from .config import settings, COUNTRIES, CATEGORIES, REGIONS, _project_root, countries_by_region, get_keyword
 from .database import (
     init_db, list_jobs, get_job, set_job_status, count_jobs,
-    consume_login_code, get_user_by_session, list_users,
-    create_login_code, log_scan_start, log_scan_finish,
+    get_user_by_session, list_users,
+    log_scan_start, log_scan_finish,
+    # Phase 2
+    get_user_by_username, create_session_for_user,
+    create_saved_search, list_saved_searches, delete_saved_search, touch_saved_search,
+    add_favorite, remove_favorite, list_favorites, is_favorite,
+    upsert_application, remove_application, list_applications, VALID_APP_STATUSES,
+    get_user_settings, update_user_settings,
 )
 from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline
 from .telegram_bot import send_text
@@ -27,7 +35,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = _project_root()
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-app = FastAPI(title="JobRadar Global", version="2.0.0")
+app = FastAPI(title="JobRadar Global", version="2.1.0")
 
 _static_dir = os.path.join(BASE_DIR, "static")
 os.makedirs(_static_dir, exist_ok=True)
@@ -56,6 +64,17 @@ async def get_current_user(request: Request) -> Optional[dict]:
     return get_user_by_session(token)
 
 
+def _set_session_cookie(response: Response, token: str):
+    response.set_cookie(
+        key="session",
+        value=token,
+        httponly=True,
+        max_age=60*60*24*30,  # 30 days
+        samesite="lax",
+        secure=False,  # set True if behind HTTPS in production (Railway terminates TLS, so False is fine)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pages
 # ---------------------------------------------------------------------------
@@ -75,31 +94,41 @@ async def dashboard(request: Request):
             "stats": stats,
             "user": user,
             "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME,
+            "webapp_public_url": settings.WEBAPP_PUBLIC_URL,
         },
     )
 
 
 # ---------------------------------------------------------------------------
-# Auth API
+# Auth API — username-based login
 # ---------------------------------------------------------------------------
 
-@app.post("/api/auth/verify")
-async def api_verify_code(code: str, response: Response):
-    """Verify a login code from the dashboard. Sets session cookie."""
-    user_info = consume_login_code(code.strip())
-    if not user_info:
-        raise HTTPException(401, "Invalid or expired code")
-    response.set_cookie(
-        key="session",
-        value=user_info["session_token"],
-        httponly=True,
-        max_age=60*60*24*30,  # 30 days
-        samesite="lax",
-    )
+class LoginRequest(BaseModel):
+    username: str
+
+
+@app.post("/api/auth/login")
+async def api_login_username(req: LoginRequest, response: Response):
+    """Log in with a Telegram username (no codes, no bots-in-the-loop).
+    The user must have sent /start to the bot at least once so we know
+    their telegram_user_id and chat_id."""
+    username = (req.username or "").strip().lstrip("@")
+    if not username:
+        raise HTTPException(400, "Username is required")
+    user = get_user_by_username(username)
+    if not user:
+        raise HTTPException(
+            404,
+            f"No account found for '@{username}'. "
+            f"Send /start to @{settings.TELEGRAM_BOT_USERNAME or 'our bot'} on Telegram first, "
+            f"then come back and enter your username."
+        )
+    token = create_session_for_user(user["id"])
+    _set_session_cookie(response, token)
     return {
         "ok": True,
-        "username": user_info["username"],
-        "first_name": user_info["first_name"],
+        "username": user.get("username"),
+        "first_name": user.get("first_name"),
     }
 
 
@@ -116,6 +145,7 @@ async def api_me(request: Request):
         return {"authenticated": False}
     return {
         "authenticated": True,
+        "user_id": user.get("id"),
         "username": user.get("username"),
         "first_name": user.get("first_name"),
         "telegram_chat_id": user.get("telegram_chat_id"),
@@ -232,6 +262,7 @@ async def api_diagnostics():
     return {
         "telegram_bot_token": mask(settings.TELEGRAM_BOT_TOKEN),
         "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME,
+        "webapp_public_url": settings.WEBAPP_PUBLIC_URL,
         "telegram_chat_id": mask(settings.TELEGRAM_CHAT_ID),
         "gemini_api_key": mask(settings.GEMINI_API_KEY),
         "gemini_model": settings.GEMINI_MODEL,
@@ -267,3 +298,168 @@ async def api_users(request: Request):
     if not user:
         raise HTTPException(401, "Not authenticated")
     return {"users": list_users()}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Saved Searches
+# ---------------------------------------------------------------------------
+
+class SaveSearchRequest(BaseModel):
+    name: str
+    countries: List[str] = []
+    categories: List[str] = []
+    keywords: str = ""
+
+
+@app.get("/api/saved-searches")
+async def api_list_saved_searches(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return {"saved_searches": list_saved_searches(user["id"])}
+
+
+@app.post("/api/saved-searches")
+async def api_create_saved_search(req: SaveSearchRequest, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if not req.name.strip():
+        raise HTTPException(400, "Name is required")
+    ss = create_saved_search(
+        user["id"], req.name.strip(),
+        [c.upper() for c in req.countries if c.upper() in COUNTRIES],
+        [c.lower() for c in req.categories if c.lower() in CATEGORIES],
+        req.keywords.strip(),
+    )
+    return {"ok": True, "saved_search": ss}
+
+
+@app.delete("/api/saved-searches/{search_id}")
+async def api_delete_saved_search(search_id: int, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    ok = delete_saved_search(user["id"], search_id)
+    if not ok:
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+@app.post("/api/saved-searches/{search_id}/run")
+async def api_run_saved_search(search_id: int, request: Request, background_tasks: BackgroundTasks):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    searches = list_saved_searches(user["id"])
+    target = next((s for s in searches if s["id"] == search_id), None)
+    if not target:
+        raise HTTPException(404, "Saved search not found")
+    countries = target["countries"] or None
+    categories = target["categories"] or None
+    touch_saved_search(search_id)
+    background_tasks.add_task(run_scan_and_pipeline, countries, categories, user["id"])
+    return {"ok": True, "status": "scan_started", "countries": countries, "categories": categories}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Favorites
+# ---------------------------------------------------------------------------
+
+@app.get("/api/favorites")
+async def api_list_favorites(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return {"favorites": list_favorites(user["id"])}
+
+
+@app.post("/api/favorites/{job_id}")
+async def api_add_favorite(job_id: int, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if not get_job(job_id):
+        raise HTTPException(404, "Job not found")
+    add_favorite(user["id"], job_id)
+    return {"ok": True, "favorited": True}
+
+
+@app.delete("/api/favorites/{job_id}")
+async def api_remove_favorite(job_id: int, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    remove_favorite(user["id"], job_id)
+    return {"ok": True, "favorited": False}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Application Tracking
+# ---------------------------------------------------------------------------
+
+class ApplicationRequest(BaseModel):
+    status: str
+    notes: str = ""
+
+
+@app.get("/api/applications")
+async def api_list_applications(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return {"applications": list_applications(user["id"])}
+
+
+@app.post("/api/applications/{job_id}")
+async def api_upsert_application(job_id: int, req: ApplicationRequest, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if not get_job(job_id):
+        raise HTTPException(404, "Job not found")
+    if req.status not in VALID_APP_STATUSES:
+        raise HTTPException(400, f"Invalid status. Must be one of: {VALID_APP_STATUSES}")
+    upsert_application(user["id"], job_id, req.status, req.notes.strip())
+    return {"ok": True, "job_id": job_id, "status": req.status}
+
+
+@app.delete("/api/applications/{job_id}")
+async def api_remove_application(job_id: int, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    remove_application(user["id"], job_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: User Settings
+# ---------------------------------------------------------------------------
+
+@app.get("/api/user/settings")
+async def api_get_settings(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return get_user_settings(user["id"])
+
+
+@app.put("/api/user/settings")
+async def api_update_settings(request: Request,
+                              notify_telegram: Optional[bool] = None,
+                              notify_email: Optional[bool] = None,
+                              email: Optional[str] = None,
+                              min_salary: Optional[str] = None,
+                              max_commute_km: Optional[int] = None):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    kwargs = {}
+    if notify_telegram is not None: kwargs["notify_telegram"] = notify_telegram
+    if notify_email is not None: kwargs["notify_email"] = notify_email
+    if email is not None: kwargs["email"] = email
+    if min_salary is not None: kwargs["min_salary"] = min_salary
+    if max_commute_km is not None: kwargs["max_commute_km"] = max_commute_km
+    update_user_settings(user["id"], **kwargs)
+    return {"ok": True, "settings": get_user_settings(user["id"])}

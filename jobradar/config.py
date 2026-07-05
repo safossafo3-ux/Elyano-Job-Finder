@@ -382,6 +382,7 @@ class Settings:
 
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_BOT_USERNAME: str = os.getenv("TELEGRAM_BOT_USERNAME", "")
+    WEBAPP_PUBLIC_URL: str = os.getenv("WEBAPP_PUBLIC_URL", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")  # fallback admin chat
 
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

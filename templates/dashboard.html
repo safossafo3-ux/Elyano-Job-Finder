@@ -62,6 +62,33 @@
   }
   .stat-pill b { color: #4ade80; font-weight: 600; }
 
+  /* ---------- Phase 2 tabs ---------- */
+  .phase2-tabs {
+    display: flex; gap: 4px;
+    padding: 6px;
+    margin-bottom: 16px;
+    border-radius: 12px;
+    overflow-x: auto;
+  }
+  .p2-tab {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #94a3b8;
+    padding: 10px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .p2-tab:hover { background: rgba(255,255,255,0.04); color: #e6e6e6; }
+  .p2-tab.active {
+    background: linear-gradient(135deg, rgba(34,211,238,0.15), rgba(129,140,248,0.15));
+    border-color: rgba(34,211,238,0.3);
+    color: #22d3ee;
+  }
+
   /* ---------- Login overlay ---------- */
   .login-overlay {
     position: fixed; inset: 0;
@@ -453,9 +480,9 @@
     <div class="login-steps">
       <ol>
         <li>Open Telegram and search for your bot: <code>@{{ telegram_bot_username }}</code></li>
-        <li>Send the message <code>/start</code></li>
-        <li>The bot will reply with a 6-digit login code</li>
-        <li>Enter that code below</li>
+        <li>Send the message <code>/start</code> to the bot</li>
+        <li>The bot will confirm you're registered</li>
+        <li>Enter your <b>Telegram username</b> below to sign in</li>
       </ol>
     </div>
     {% if telegram_bot_username %}
@@ -467,12 +494,12 @@
       ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set in .env. Set it so the login link works.
     </p>
     {% endif %}
-    <input type="text" class="code-input" id="codeInput" maxlength="6" placeholder="000000" inputmode="numeric">
+    <input type="text" class="code-input" id="usernameInput" placeholder="your_username" autocomplete="username" style="text-align:left; letter-spacing:0.5px;">
     <div style="display:flex; gap:8px; justify-content:center;">
-      <button class="primary" onclick="verifyCode()">Sign in →</button>
+      <button class="primary" onclick="loginWithUsername()">Sign in →</button>
     </div>
     <p style="margin-top:16px; font-size:11px; color:#64748b;">
-      ⏰ Code expires in 10 minutes. Get a new one with <code>/start</code> anytime.
+      💡 Tip: your Telegram username is in Settings → Username in the Telegram app. No <code>@</code> needed.
     </p>
   </div>
 </div>
@@ -480,7 +507,17 @@
 <!-- ============== MAIN ============== -->
 <div class="main-container">
 
-  <!-- Wizard -->
+  <!-- Phase 2 Tab Navigation -->
+  <div class="phase2-tabs glass" id="phase2Tabs" style="display:none;">
+    <button class="p2-tab active" data-tab="scan" onclick="switchTab('scan')">🔍 Scan</button>
+    <button class="p2-tab" data-tab="favorites" onclick="switchTab('favorites')">⭐ Favorites</button>
+    <button class="p2-tab" data-tab="applications" onclick="switchTab('applications')">📝 Applications</button>
+    <button class="p2-tab" data-tab="saved" onclick="switchTab('saved')">💾 Saved Searches</button>
+    <button class="p2-tab" data-tab="settings" onclick="switchTab('settings')">⚙️ Settings</button>
+  </div>
+
+  <!-- Scan Tab (Wizard + Jobs) -->
+  <div class="p2-panel" id="tab-scan">
   <div class="wizard glass">
     <div class="step-indicator">
       <div class="step-dot active" id="dot1"><div class="num">1</div> Region</div>
@@ -539,12 +576,65 @@
       <button class="primary" id="nextBtn" onclick="nextStep()">Continue →</button>
     </div>
   </div>
-
-  <!-- Jobs table -->
+  <!-- Jobs table (inside scan tab) -->
   <div class="jobs-section glass">
     <h2>📋 Recently discovered jobs</h2>
     <div id="jobsTable"></div>
   </div>
+  </div><!-- /tab-scan -->
+
+  <!-- Favorites Tab -->
+  <div class="p2-panel" id="tab-favorites" style="display:none;">
+    <div class="jobs-section glass">
+      <h2>⭐ Your Favorites</h2>
+      <div id="favoritesTable"></div>
+    </div>
+  </div>
+
+  <!-- Applications Tab -->
+  <div class="p2-panel" id="tab-applications" style="display:none;">
+    <div class="jobs-section glass">
+      <h2>📝 Application Tracking</h2>
+      <div id="applicationsTable"></div>
+    </div>
+  </div>
+
+  <!-- Saved Searches Tab -->
+  <div class="p2-panel" id="tab-saved" style="display:none;">
+    <div class="jobs-section glass">
+      <h2>💾 Saved Searches</h2>
+      <div style="padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.05);">
+        <button class="primary" onclick="saveCurrentSearch()">💾 Save current selection as a search</button>
+      </div>
+      <div id="savedSearchesList"></div>
+    </div>
+  </div>
+
+  <!-- Settings Tab -->
+  <div class="p2-panel" id="tab-settings" style="display:none;">
+    <div class="jobs-section glass">
+      <h2>⚙️ Notification Settings</h2>
+      <div style="padding:20px; line-height:2; color:#cbd5e1;">
+        <label style="display:block; margin-bottom:8px;">
+          <input type="checkbox" id="setNotifyTelegram"> Send me job alerts via Telegram
+        </label>
+        <label style="display:block; margin-bottom:8px;">
+          <input type="checkbox" id="setNotifyEmail"> Also send alerts via email (optional)
+        </label>
+        <label style="display:block; margin-bottom:8px;">
+          Email address: <input type="email" id="setEmail" placeholder="you@example.com" style="background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.1); color:#e6e6e6; padding:6px 10px; border-radius:6px; width:280px;">
+        </label>
+        <label style="display:block; margin-bottom:8px;">
+          Minimum salary (optional): <input type="text" id="setMinSalary" placeholder="e.g. 1500 EUR/month" style="background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.1); color:#e6e6e6; padding:6px 10px; border-radius:6px; width:200px;">
+        </label>
+        <label style="display:block; margin-bottom:16px;">
+          Max commute (km): <input type="number" id="setCommute" placeholder="e.g. 30" style="background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.1); color:#e6e6e6; padding:6px 10px; border-radius:6px; width:100px;">
+        </label>
+        <button class="primary" onclick="saveSettings()">💾 Save settings</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <div class="toast" id="toast"></div>
@@ -574,7 +664,9 @@ async function init() {
     if (d.authenticated) {
       state.user = d;
       document.getElementById('userBadgeText').innerHTML =
-        `👤 <b>${d.username || d.first_name || 'User'}</b>`;
+        `👤 <b>${d.username || d.first_name || 'User'}</b> · <a href="#" onclick="logout(); return false;" style="color:#22d3ee; margin-left:8px;">logout</a>`;
+      // Show Phase 2 tabs now that user is logged in
+      document.getElementById('phase2Tabs').style.display = 'flex';
     } else {
       showLogin();
     }
@@ -598,17 +690,21 @@ async function init() {
 
 function showLogin() {
   document.getElementById('loginOverlay').style.display = 'flex';
-  document.getElementById('codeInput').focus();
+  setTimeout(() => document.getElementById('usernameInput').focus(), 100);
 }
 
-async function verifyCode() {
-  const code = document.getElementById('codeInput').value.trim();
-  if (!code) { showToast('Enter the 6-digit code', true); return; }
+async function loginWithUsername() {
+  const username = document.getElementById('usernameInput').value.trim().replace(/^@/, '');
+  if (!username) { showToast('Enter your Telegram username', true); return; }
   try {
-    const r = await fetch('/api/auth/verify?code=' + code, { method: 'POST' });
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username }),
+    });
     if (!r.ok) {
       const e = await r.json();
-      showToast('Login failed: ' + (e.detail || 'invalid code'), true);
+      showToast('Login failed: ' + (e.detail || 'unknown error'), true);
       return;
     }
     const d = await r.json();
@@ -619,9 +715,253 @@ async function verifyCode() {
   }
 }
 
-document.getElementById('codeInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') verifyCode();
+async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  location.reload();
+}
+
+document.getElementById('usernameInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') loginWithUsername();
 });
+
+// ============================================================
+// Phase 2: Tab switching
+// ============================================================
+function switchTab(tab) {
+  document.querySelectorAll('.p2-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  document.querySelectorAll('.p2-panel').forEach(p => {
+    p.style.display = 'none';
+  });
+  const panel = document.getElementById('tab-' + tab);
+  if (panel) panel.style.display = 'block';
+  // Load data on tab open
+  if (tab === 'favorites') loadFavorites();
+  if (tab === 'applications') loadApplications();
+  if (tab === 'saved') loadSavedSearches();
+  if (tab === 'settings') loadSettings();
+}
+
+// ============================================================
+// Phase 2: Favorites
+// ============================================================
+async function loadFavorites() {
+  try {
+    const r = await fetch('/api/favorites');
+    const d = await r.json();
+    const favs = d.favorites || [];
+    const el = document.getElementById('favoritesTable');
+    if (favs.length === 0) {
+      el.innerHTML = `<div class="empty"><p>No favorites yet.</p>
+        <p style="font-size:13px; margin-top:8px;">Click ⭐ on any job to save it here.</p></div>`;
+      return;
+    }
+    el.innerHTML = `<table><thead><tr>
+      <th>Country</th><th>Role</th><th>Summary</th><th>Phone</th><th></th>
+    </tr></thead><tbody>${favs.map(j => jobRowCompact(j, true)).join('')}</tbody></table>`;
+  } catch (e) { console.error(e); }
+}
+
+async function toggleFavorite(jobId, btn) {
+  try {
+    const r = await fetch(`/api/favorites/${jobId}`, { method: 'POST' });
+    if (r.ok) {
+      btn.textContent = '⭐';
+      btn.classList.add('favorited');
+      showToast('⭐ Added to favorites');
+    }
+  } catch (e) { console.error(e); }
+}
+
+async function removeFavorite(jobId) {
+  await fetch(`/api/favorites/${jobId}`, { method: 'DELETE' });
+  loadFavorites();
+  showToast('Removed from favorites');
+}
+
+// ============================================================
+// Phase 2: Application tracking
+// ============================================================
+async function loadApplications() {
+  try {
+    const r = await fetch('/api/applications');
+    const d = await r.json();
+    const apps = d.applications || [];
+    const el = document.getElementById('applicationsTable');
+    if (apps.length === 0) {
+      el.innerHTML = `<div class="empty"><p>No applications tracked yet.</p>
+        <p style="font-size:13px; margin-top:8px;">Mark a job as "applied" to start tracking.</p></div>`;
+      return;
+    }
+    el.innerHTML = `<table><thead><tr>
+      <th>Country</th><th>Role</th><th>Summary</th><th>Status</th><th>Applied</th><th></th>
+    </tr></thead><tbody>${apps.map(j => appRow(j)).join('')}</tbody></table>`;
+  } catch (e) { console.error(e); }
+}
+
+function appRow(j) {
+  const flag = countryFlag(j.country_code);
+  const cat = categoryLabel(j.category);
+  const statusColors = {
+    applied: '#3b82f6', interview: '#f59e0b', offer: '#10b981', rejected: '#ef4444'
+  };
+  return `<tr>
+    <td><div style="font-size:18px">${flag}</div>
+        <div style="font-size:11px;color:#64748b">${j.country_name||''}</div></td>
+    <td>${cat}</td>
+    <td><div class="summary">${j.ad_summary_en || j.title}</div>
+        <div class="meta"><a href="${j.url}" target="_blank">original ↗</a></div></td>
+    <td>
+      <select onchange="updateAppStatus(${j.id}, this.value)" class="status-pill"
+              style="background:${statusColors[j.app_status] || '#475569'}; color:#fff; border:none; padding:6px 10px; border-radius:6px;">
+        <option value="applied" ${j.app_status==='applied'?'selected':''}>Applied</option>
+        <option value="interview" ${j.app_status==='interview'?'selected':''}>Interview</option>
+        <option value="offer" ${j.app_status==='offer'?'selected':''}>Offer</option>
+        <option value="rejected" ${j.app_status==='rejected'?'selected':''}>Rejected</option>
+      </select>
+    </td>
+    <td><div class="meta">${(j.applied_at||'').slice(0,10)}</div></td>
+    <td>
+      <button onclick="removeApp(${j.id})" class="ghost" style="font-size:11px;">Remove</button>
+    </td>
+  </tr>`;
+}
+
+async function updateAppStatus(jobId, status) {
+  await fetch(`/api/applications/${jobId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  showToast(`📝 Updated: ${status}`);
+  loadApplications();
+}
+
+async function removeApp(jobId) {
+  await fetch(`/api/applications/${jobId}`, { method: 'DELETE' });
+  loadApplications();
+  showToast('Removed');
+}
+
+// ============================================================
+// Phase 2: Saved searches
+// ============================================================
+async function saveCurrentSearch() {
+  if (state.selectedCountries.size === 0 || state.selectedCategories.size === 0) {
+    showToast('Pick countries and roles in the Scan tab first', true);
+    switchTab('scan');
+    return;
+  }
+  const name = prompt('Name this search:', `Search ${new Date().toLocaleDateString()}`);
+  if (!name) return;
+  try {
+    const r = await fetch('/api/saved-searches', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        countries: [...state.selectedCountries],
+        categories: [...state.selectedCategories],
+        keywords: '',
+      }),
+    });
+    if (r.ok) {
+      showToast('💾 Search saved!');
+      loadSavedSearches();
+    } else {
+      showToast('Save failed', true);
+    }
+  } catch (e) { showToast('Error: ' + e.message, true); }
+}
+
+async function loadSavedSearches() {
+  try {
+    const r = await fetch('/api/saved-searches');
+    const d = await r.json();
+    const list = d.saved_searches || [];
+    const el = document.getElementById('savedSearchesList');
+    if (list.length === 0) {
+      el.innerHTML = `<div class="empty"><p>No saved searches yet.</p>
+        <p style="font-size:13px; margin-top:8px;">Configure a search in the Scan tab, then click "Save current selection".</p></div>`;
+      return;
+    }
+    el.innerHTML = list.map(s => `
+      <div style="padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.05); display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-weight:600; color:#e6e6e6;">${s.name}</div>
+          <div style="font-size:12px; color:#94a3b8; margin-top:4px;">
+            🌍 ${s.countries.length} countries · 💼 ${s.categories.length} roles
+            ${s.last_run_at ? ' · last run: ' + s.last_run_at.slice(0,10) : ''}
+          </div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="primary" onclick="runSavedSearch(${s.id})">▶ Run</button>
+          <button class="ghost" onclick="deleteSavedSearch(${s.id})">🗑</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) { console.error(e); }
+}
+
+async function runSavedSearch(id) {
+  try {
+    const r = await fetch(`/api/saved-searches/${id}/run`, { method: 'POST' });
+    if (r.ok) {
+      showToast('⚡ Scan started — watch Telegram!');
+      switchTab('scan');
+    }
+  } catch (e) { showToast('Error: ' + e.message, true); }
+}
+
+async function deleteSavedSearch(id) {
+  if (!confirm('Delete this saved search?')) return;
+  await fetch(`/api/saved-searches/${id}`, { method: 'DELETE' });
+  loadSavedSearches();
+  showToast('Deleted');
+}
+
+// ============================================================
+// Phase 2: Settings
+// ============================================================
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/user/settings');
+    const d = await r.json();
+    document.getElementById('setNotifyTelegram').checked = !!d.notify_telegram;
+    document.getElementById('setNotifyEmail').checked = !!d.notify_email;
+    document.getElementById('setEmail').value = d.email || '';
+    document.getElementById('setMinSalary').value = d.min_salary || '';
+    document.getElementById('setCommute').value = d.max_commute_km || '';
+  } catch (e) { console.error(e); }
+}
+
+async function saveSettings() {
+  const params = new URLSearchParams();
+  params.set('notify_telegram', document.getElementById('setNotifyTelegram').checked);
+  params.set('notify_email', document.getElementById('setNotifyEmail').checked);
+  params.set('email', document.getElementById('setEmail').value);
+  params.set('min_salary', document.getElementById('setMinSalary').value);
+  params.set('max_commute_km', document.getElementById('setCommute').value);
+  try {
+    const r = await fetch('/api/user/settings?' + params.toString(), { method: 'PUT' });
+    if (r.ok) showToast('⚙️ Settings saved');
+  } catch (e) { showToast('Error: ' + e.message, true); }
+}
+
+function jobRowCompact(j, isFav) {
+  const flag = countryFlag(j.country_code);
+  const cat = categoryLabel(j.category);
+  return `<tr>
+    <td><div style="font-size:18px">${flag}</div>
+        <div style="font-size:11px;color:#64748b">${j.country_name||''}</div></td>
+    <td>${cat}</td>
+    <td><div class="summary">${j.ad_summary_en || j.title}</div>
+        <div class="meta"><a href="${j.url}" target="_blank">original ↗</a></div></td>
+    <td>${j.phone_normalized ? `<div class="phone">${j.phone_normalized}</div>` : '<div class="no-phone">—</div>'}</td>
+    <td>${isFav ? `<button class="ghost" onclick="removeFavorite(${j.id})">Remove</button>` : ''}</td>
+  </tr>`;
+}
 
 // ============================================================
 // Wizard navigation
@@ -846,9 +1186,22 @@ function jobRow(j) {
           <option value="applied" ${j.status==='applied'?'selected':''}>Applied</option>
           <option value="rejected" ${j.status==='rejected'?'selected':''}>Rejected</option>
         </select></td>
-      <td><button onclick="window.open('${j.url}','_blank')">Open</button></td>
+      <td style="white-space:nowrap;">
+        <button class="ghost" onclick="favJob(${j.id}, this)" title="Add to favorites" style="padding:4px 8px;">⭐</button>
+        <button onclick="window.open('${j.url}','_blank')">Open</button>
+      </td>
     </tr>
   `;
+}
+
+async function favJob(jobId, btn) {
+  try {
+    const r = await fetch(`/api/favorites/${jobId}`, { method: 'POST' });
+    if (r.ok) {
+      btn.textContent = '✅';
+      showToast('⭐ Added to favorites');
+    }
+  } catch (e) { console.error(e); }
 }
 
 function countryFlag(code) {

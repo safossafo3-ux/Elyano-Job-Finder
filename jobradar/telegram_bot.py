@@ -1,16 +1,16 @@
 """
-Telegram bot for login flow.
-The bot receives /start from a user, asks them to start login from the web UI,
-and handles a /login command that registers them.
+Telegram bot for JobRadar.
 
-Flow:
+PHASE 2 FLOW (simple username login):
   1. User opens dashboard → clicks "Login with Telegram"
-  2. Dashboard shows: "Send /start to @YourBot, then click 'I have started'"
+  2. Modal says: "Send /start to @YourBot, then enter your Telegram username here"
   3. User sends /start to the bot
-  4. Bot replies: "Welcome! Click the link below to get your login code:"
-     -> sends a URL: https://yourdomain.com/api/auth/request_code?tg_uid=<their_id>
-  5. User clicks → backend calls create_login_code and sends it via Telegram
-  6. User enters code on dashboard → /api/auth/verify → session cookie set
+  4. Bot immediately registers them (stores telegram_user_id, chat_id, username)
+     and replies: "You're registered! Now go back to the dashboard and enter
+     your Telegram username to log in."
+  5. User enters their username on the dashboard → instant login.
+
+The old 6-digit code flow is gone. Username is the only credential.
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from typing import Optional
 import httpx
 
 from .config import settings
-from .database import create_login_code, get_user_by_telegram_id
+from .database import register_telegram_user, get_user_by_telegram_id
 
 logger = logging.getLogger(__name__)
 
@@ -148,38 +148,51 @@ async def handle_update(update: dict) -> Optional[dict]:
     if not chat_id or not tg_user_id:
         return None
 
-    if text == "/start":
-        # Check if user is already registered
+    if text.startswith("/start"):
+        # Register the user IMMEDIATELY. They can now log in by username.
         existing = get_user_by_telegram_id(tg_user_id)
-        if existing:
-            # Generate a fresh login code
-            code = create_login_code(tg_user_id, chat_id, username, first_name)
-            await send_text(chat_id,
-                f"👋 Welcome back, {first_name or username}!\n\n"
-                f"Your one-time login code is:\n\n"
-                f"<code>{code}</code>\n\n"
-                f"Enter this code on the JobRadar dashboard to sign in.\n"
-                f"⏰ Code expires in 10 minutes."
-            )
-            return {"status": "code_sent", "existing_user": True}
+        register_telegram_user(tg_user_id, chat_id, username, first_name)
+
+        bot_link = ""
+        if settings.WEBAPP_PUBLIC_URL:
+            bot_link = settings.WEBAPP_PUBLIC_URL
         else:
-            code = create_login_code(tg_user_id, chat_id, username, first_name)
+            bot_link = "(the dashboard URL)"
+
+        if not username:
             await send_text(chat_id,
-                f"👋 Welcome to JobRadar, {first_name or username}!\n\n"
-                f"Your one-time login code is:\n\n"
-                f"<code>{code}</code>\n\n"
-                f"Enter this code on the JobRadar dashboard to register.\n"
-                f"⏰ Code expires in 10 minutes."
+                f"👋 Welcome to JobRadar, {first_name or 'friend'}!\n\n"
+                f"⚠️ <b>Important:</b> Your Telegram account doesn't have a public username set, "
+                f"so you can't log in to the dashboard yet.\n\n"
+                f"To fix this:\n"
+                f"1. Open Telegram Settings → Username\n"
+                f"2. Pick a username (e.g. <code>mustafa_ahmed</code>)\n"
+                f"3. Send /start to me again\n\n"
+                f"Then visit the dashboard and log in with your username."
             )
-            return {"status": "code_sent", "existing_user": False}
+            return {"status": "no_username"}
+
+        display_name = f"@{username}"
+        await send_text(chat_id,
+            f"✅ <b>You're registered, {first_name or display_name}!</b>\n\n"
+            f"Your Telegram username <code>@{username}</code> is now your JobRadar login.\n\n"
+            f"👉 Go to the dashboard and enter <code>{username}</code> to sign in.\n"
+            f"🌐 Dashboard: {bot_link}\n\n"
+            f"I'll send you job alerts here automatically once a scan finds matches."
+        )
+        return {"status": "registered", "existing_user": bool(existing)}
 
     elif text == "/help":
         await send_text(chat_id,
             "<b>JobRadar Bot</b>\n\n"
             "Commands:\n"
-            "/start — Get a login code for the dashboard\n"
+            "/start — Register / refresh your account\n"
             "/help — Show this help\n\n"
-            "Once you log in, you'll receive job alerts here automatically."
+            "<b>How to log in:</b>\n"
+            "1. Send me /start\n"
+            "2. Open the dashboard\n"
+            "3. Enter your Telegram username\n\n"
+            "Once logged in, you'll receive job alerts here automatically."
         )
         return {"status": "help_sent"}
 
