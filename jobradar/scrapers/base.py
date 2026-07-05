@@ -8,11 +8,16 @@ For each (country, category) we now query up to 15+ job portals in parallel batc
   - Recruitment agencies (Hays, Michael Page, Adecco, Randstad, Manpower)
   - DuckDuckGo/Google fallbacks
 
-Strategies:
+Strategies (v3 — fast, listing-first):
   - Use real browser fingerprint + viewport
   - Block images/fonts to speed up
-  - Try to extract job cards from listing pages (each portal type has its own DOM parser)
-  - For portals we can't parse, fall back to "discover links" generic extraction
+  - Extract RICH job data (title, company, summary, location, url) directly
+    from the listing page where possible — this means jobs are saved even
+    if the detail page is blocked or slow.
+  - Only fetch the detail page for the FIRST FEW jobs as a "richness upgrade"
+    (so we still get the phone number / full ad text when possible).
+  - Save EVERY job found, even if detail fetch fails. Use listing-page text as
+    the ad text. The LLM analyzes whatever it has.
   - Cap jobs per portal (default 15) → up to 15 portals × 15 jobs = 225 candidate jobs per (country, category)
   - Deduplicate by URL across portals
 """
@@ -22,7 +27,7 @@ import logging
 import os
 import random
 import string
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
 from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 from playwright.async_api import async_playwright, Page, TimeoutError as PWTimeout
@@ -40,6 +45,9 @@ logger = logging.getLogger(__name__)
 SCREENSHOTS_DIR = _default_screenshots_dir()
 MAX_PORTALS_PER_COUNTRY = int(os.getenv("MAX_PORTALS_PER_COUNTRY", "15"))
 MAX_JOBS_PER_PORTAL = int(os.getenv("MAX_JOBS_PER_PORTAL", "15"))
+# How many of the top jobs per portal get a detail-page fetch (slow, gets blocked).
+# Keep this LOW so the overall scan finishes quickly.
+MAX_DETAIL_FETCHES_PER_PORTAL = int(os.getenv("MAX_DETAIL_FETCHES_PER_PORTAL", "3"))
 
 
 def screenshot_path_for(url: str) -> str:
@@ -53,7 +61,8 @@ def screenshot_path_for(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def extract_job_links_generic(page: Page, base_url: str) -> List[Dict[str, str]]:
-    """Generic extractor: scan all <a> elements with job-like text/href."""
+    """Generic extractor: scan all <a> elements with job-like text/href.
+    Returns rich dicts: {url, title, company, location, summary}."""
     return await page.evaluate(
         """
         (baseurl) => {
@@ -73,7 +82,20 @@ async def extract_job_links_generic(page: Page, base_url: str) -> List[Dict[str,
             if (/^(next|prev|more|load|filter|sort|back|home|login|sign)/i.test(text)) continue;
             if (seen.has(href)) continue;
             seen.add(href);
-            out.push({url: href, title: text.slice(0, 200)});
+            // Try to grab a sibling company name and summary
+            const card = a.closest('[class*=job], [class*=card], [class*=result], li, article, tr, [data-cy]');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('[class*=company], [class*=employer], [data-company-name], .company-name, .job-card__company-name, [class*=business]');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('[class*=location], [class*=loc], [data-location]');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+              const sumEl = card.querySelector('[class*=snippet], [class*=summary], [class*=description], .job-snippet');
+              if (sumEl) summary = (sumEl.innerText || '').trim().slice(0,500);
+            }
+            out.push({url: href, title: text.slice(0, 200), company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -84,7 +106,8 @@ async def extract_job_links_generic(page: Page, base_url: str) -> List[Dict[str,
 
 
 async def extract_job_links_indeed(page: Page, base_url: str) -> List[Dict[str, str]]:
-    """Indeed-specific selectors across multiple versions."""
+    """Indeed-specific selectors across multiple versions.
+    Returns rich dicts with company + summary where available."""
     return await page.evaluate(
         """
         () => {
@@ -105,12 +128,26 @@ async def extract_job_links_indeed(page: Page, base_url: str) -> List[Dict[str, 
               const href = a.href || a.getAttribute('href');
               if (!href || seen.has(href)) continue;
               seen.add(href);
-              out.push({href, text: (a.innerText || a.textContent || '').trim().slice(0,200)});
+              const title = (a.innerText || a.textContent || '').trim().slice(0,200);
+              // Find parent card for company/snippet
+              const card = a.closest('li, .job_seen_beacon, [class*=result], [data-jk], div.card, tr');
+              let company = '';
+              let location = '';
+              let summary = '';
+              if (card) {
+                const coEl = card.querySelector('[data-company-name], .companyName, [class*=companyName], [class*=company-name]');
+                if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+                const locEl = card.querySelector('[data-testid="text-location"], .companyLocation, [class*=location]');
+                if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+                const sumEl = card.querySelector('.job-snippet, [class*=snippet], [class*=summary]');
+                if (sumEl) summary = (sumEl.innerText || '').trim().slice(0,500);
+              }
+              out.push({url: href, title, company, location, summary});
               if (out.length >= 30) break;
             }
             if (out.length >= 30) break;
           }
-          return out.map(e => ({url: e.href, title: e.text}));
+          return out;
         }
         """
     )
@@ -129,7 +166,17 @@ async def extract_job_links_linkedin(page: Page, base_url: str) -> List[Dict[str
             seen.add(href);
             const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
             if (title.length < 3) continue;
-            out.push({url: href, title});
+            const card = a.closest('.job-card-container, li, [class*=job-card], [data-entity-urn]');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('.job-card-container__company-name, [class*=company-name], .base-search-card__subtitle');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('.job-card-container__metadata-item, [class*=location], .base-search-card__metadata');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+            }
+            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -150,7 +197,19 @@ async def extract_job_links_jooble(page: Page, base_url: str) -> List[Dict[str, 
             seen.add(href);
             const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
             if (title.length < 3) continue;
-            out.push({url: href, title});
+            const card = a.closest('.vacancy, [class*=job], li, article, tr');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('[class*=company], .vacancy-company, .gray_text');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('[class*=location], [class*=region]');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+              const sumEl = card.querySelector('.description, [class*=snippet]');
+              if (sumEl) summary = (sumEl.innerText || '').trim().slice(0,500);
+            }
+            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -171,7 +230,17 @@ async def extract_job_links_talent(page: Page, base_url: str) -> List[Dict[str, 
             seen.add(href);
             const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
             if (title.length < 3) continue;
-            out.push({url: href, title});
+            const card = a.closest('.job-card, li, article, tr');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('[class*=company], .company, [class*=business]');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('[class*=location], .location');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+            }
+            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -192,7 +261,17 @@ async def extract_job_links_jora(page: Page, base_url: str) -> List[Dict[str, st
             seen.add(href);
             const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
             if (title.length < 3) continue;
-            out.push({url: href, title});
+            const card = a.closest('.job-item, li, article, tr, [class*=result]');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('[class*=company], .company');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('[class*=location], .location');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+            }
+            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -213,7 +292,19 @@ async def extract_job_links_careerjet(page: Page, base_url: str) -> List[Dict[st
             seen.add(href);
             const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
             if (title.length < 3) continue;
-            out.push({url: href, title});
+            const card = a.closest('.job, li, article, tr, [class*=result]');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('[class*=company], .company');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('[class*=location], .location');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+              const sumEl = card.querySelector('.desc, [class*=description], [class*=snippet]');
+              if (sumEl) summary = (sumEl.innerText || '').trim().slice(0,500);
+            }
+            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -234,7 +325,17 @@ async def extract_job_links_glassdoor(page: Page, base_url: str) -> List[Dict[st
             seen.add(href);
             const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
             if (title.length < 3) continue;
-            out.push({url: href, title});
+            const card = a.closest('.jobCard, li, [class*=job], article');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('[class*=employer], .employerName, [data-test*=employer]');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('[class*=location], .loc');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+            }
+            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -255,7 +356,17 @@ async def extract_job_links_monster(page: Page, base_url: str) -> List[Dict[str,
             seen.add(href);
             const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
             if (title.length < 3) continue;
-            out.push({url: href, title});
+            const card = a.closest('.job-card, li, article, tr, [class*=result]');
+            let company = '';
+            let location = '';
+            let summary = '';
+            if (card) {
+              const coEl = card.querySelector('[class*=company], .company');
+              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+              const locEl = card.querySelector('[class*=location], .location');
+              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+            }
+            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -400,14 +511,57 @@ async def fetch_job_detail(page: Page, url: str, portal_type: str = "") -> Optio
 
 
 # ---------------------------------------------------------------------------
-# Single-portal scrape
+# Single-portal scrape — fast listing-first strategy
 # ---------------------------------------------------------------------------
+
+# URLs that are obviously NOT job detail pages
+SKIP_URL_KW = [
+    "/login", "/signup", "/register", "/account", "/auth", "/privacy",
+    "/terms", "javascript:", "/about", "/contact", "/hire", "/employer",
+    "/career/salaries", "/career-guide", "/companies/", "/cmp/", "/review/",
+    "/career-advice", "/browse-", "/sitemap", "/feed/", "/messaging/",
+    "/help/", "/support", "/faq", "/legal/",
+]
+# Titles that indicate the page is NOT a job detail (captcha, listing, etc.)
+SKIP_TITLE_KW = [
+    "additional verification", "are you a robot", "captcha", "verify you are",
+    "access denied", "403 forbidden", "page not found", "sign in to", "log in",
+    "blocked", "forbidden", "service unavailable", "browse jobs", "all jobs",
+    "jobs in united states", "jobs in united kingdom", "jobs in germany",
+    "search results", "we couldn't find", "no results",
+]
+
+
+def _is_skip_url(url: str) -> bool:
+    url_lower = url.lower()
+    if any(kw in url_lower for kw in SKIP_URL_KW):
+        return True
+    # LinkedIn browse-all-jobs pages like /jobs/{keyword}-jobs
+    if "linkedin.com/jobs/" in url_lower:
+        path = urlparse(url).path.lower()
+        if "/jobs/view/" not in path and "currentjobid" not in url_lower:
+            return True
+    # Indeed salary/category pages
+    if "indeed.com" in url_lower and "/jobs" not in url_lower and "/viewjob" not in url_lower:
+        if url_lower.endswith("indeed.com/") or "indeed.com/?" in url_lower:
+            return True
+    return False
+
 
 async def scrape_one_portal(portal: Portal, country_code: str, category_key: str,
                             list_page: Page, detail_page: Page,
                             seen_urls: Set[str],
                             user_id: Optional[int] = None) -> Dict[str, int]:
-    """Scrape one portal for one (country, category). Returns {found, new}."""
+    """Scrape one portal for one (country, category). Returns {found, new}.
+
+    Strategy (v3 — fast):
+      1. Build listing URL, load it
+      2. Extract RICH job data (title, company, summary, location) from the listing page
+      3. Save EVERY job immediately using listing-page info as the ad text
+      4. Only fetch the detail page for the first MAX_DETAIL_FETCHES_PER_PORTAL jobs
+         to upgrade the data (richer description, phone number, screenshot)
+      5. Run analyze-and-notify for each newly-inserted job
+    """
     country = COUNTRIES[country_code]
     keyword = get_keyword(category_key, country_code)
     try:
@@ -451,35 +605,13 @@ async def scrape_one_portal(portal: Portal, country_code: str, category_key: str
         # Some portals embed results inside iframes; try the generic extractor on the whole document
         raw_links = await extract_job_links_generic(list_page, search_url)
 
+    if not raw_links:
+        logger.info(f"[{country_code}/{portal.name}] no job links extracted")
+        return {"found": 0, "new": 0}
+
     found = 0
     new = 0
-    # URLs that are obviously NOT job detail pages
-    SKIP_URL_KW = [
-        "/login", "/signup", "/register", "/account", "/auth", "/privacy",
-        "/terms", "javascript:", "/about", "/contact", "/hire", "/employer",
-        "/career/salaries", "/career-guide", "/companies/", "/cmp/", "/review/",
-        "/career-advice", "/browse-", "/sitemap", "/feed/", "/messaging/",
-        "/help/", "/support", "/faq", "/legal/",
-        # LinkedIn browse pages (URL ends in "-jobs")
-    ]
-    # Titles that indicate the page is NOT a job detail (captcha, listing, etc.)
-    SKIP_TITLE_KW = [
-        "additional verification", "are you a robot", "captcha", "verify you are",
-        "access denied", "403 forbidden", "page not found", "sign in to", "log in",
-        "blocked", "forbidden", "service unavailable", "browse jobs", "all jobs",
-        "jobs in united states", "jobs in united kingdom", "jobs in germany",
-        "search results", "we couldn't find", "no results",
-    ]
-    # Skip LinkedIn browse-all-jobs URLs like "/jobs/{keyword}-jobs"
-    def is_linkedin_browse(url: str) -> bool:
-        if "linkedin.com/jobs/" not in url.lower():
-            return False
-        path = urlparse(url).path.lower()
-        # Real LinkedIn job URLs look like /jobs/view/{id}/ or /jobs/view/?currentJobId=...
-        if "/jobs/view/" in path or "currentjobid" in url.lower():
-            return False
-        # Anything else (e.g. /jobs/sales-jobs, /jobs/ey-jobs) is a browse page
-        return True
+    detail_tasks: List[Tuple[Dict, str]] = []  # (job_entry, normalized_url)
 
     for entry in raw_links[:MAX_JOBS_PER_PORTAL]:
         href = entry.get("url") or entry.get("href") or ""
@@ -492,50 +624,45 @@ async def scrape_one_portal(portal: Portal, country_code: str, category_key: str
         else:
             url = urljoin(search_url, href)
 
-        url_lower = url.lower()
-
-        # Skip obviously non-job URLs
-        if any(kw in url_lower for kw in SKIP_URL_KW):
+        if _is_skip_url(url):
             continue
-
-        # Skip LinkedIn browse-all-jobs pages
-        if is_linkedin_browse(url):
-            continue
-
-        # Skip Indeed salary/category pages
-        if "indeed.com" in url_lower and "/jobs" not in url_lower and "/viewjob" not in url_lower:
-            # Indeed job URLs always contain /jobs or /viewjob
-            if url_lower.endswith("indeed.com/") or "indeed.com/?" in url_lower:
-                continue
-
-        # Skip if URL was already seen
         if url in seen_urls:
             continue
         seen_urls.add(url)
 
         # Pre-check the title text — if it's obviously a non-job page, skip
-        title_text = (entry.get("text") or entry.get("title") or "").lower()
+        title_text = (entry.get("title") or entry.get("text") or "").lower()
         if any(kw in title_text for kw in SKIP_TITLE_KW):
             continue
 
-        await asyncio.sleep(random.uniform(0.3, 1.0))
-        detail = await fetch_job_detail(detail_page, url, portal.portal_type)
-        if not detail:
-            continue
+        # --- LISTING-FIRST STRATEGY: save the job immediately using listing data ---
+        listing_title = (entry.get("title") or entry.get("text") or "").strip()[:200]
+        listing_company = (entry.get("company") or "").strip()[:200]
+        listing_location = (entry.get("location") or "").strip()[:120]
+        listing_summary = (entry.get("summary") or "").strip()[:1000]
 
-        # Post-fetch validation: skip pages with anti-bot / not-found titles
-        detail_title_lower = (detail.get("title") or "").lower()
-        if any(kw in detail_title_lower for kw in SKIP_TITLE_KW):
-            logger.debug(f"Skipping non-job page: {url[:80]}")
+        # Compose ad text from whatever the listing gave us
+        ad_parts = []
+        if listing_title:
+            ad_parts.append(f"Title: {listing_title}")
+        if listing_company:
+            ad_parts.append(f"Company: {listing_company}")
+        if listing_location:
+            ad_parts.append(f"Location: {listing_location}")
+        if listing_summary:
+            ad_parts.append(f"Description: {listing_summary}")
+        if not ad_parts:
+            # No info — skip
             continue
-
-        # Skip pages where the body text is suspiciously short (likely captcha/empty)
-        if len(detail.get("full_text") or "") < 100:
-            continue
+        listing_ad_text = "\n".join(ad_parts)
 
         found += 1
         job = {
-            **detail,
+            "url": url,
+            "title": listing_title,
+            "company": listing_company,
+            "full_text": listing_ad_text[:6000],
+            "screenshot_path": "",  # will be set later if we fetch detail
             "country_code": country_code,
             "country_name": country.name,
             "category": category_key,
@@ -551,16 +678,73 @@ async def scrape_one_portal(portal: Portal, country_code: str, category_key: str
         is_new = upsert_job(job)
         if is_new:
             new += 1
-            try:
-                res = await analyze_and_notify_single(
-                    country_code,
-                    detail.get("full_text") or detail.get("title") or "",
-                    url,
-                    user_id=user_id,
-                )
-                logger.info(f"    ↳ {portal.name} realtime {url[:60]}… → {res['status']}")
-            except Exception as e:
-                logger.warning(f"    ↳ realtime analyze failed for {url}: {e}")
+
+        # Queue a detail-fetch for the FIRST few new jobs (richness upgrade).
+        # Skip for non-new jobs (already have full data).
+        if is_new and len(detail_tasks) < MAX_DETAIL_FETCHES_PER_PORTAL:
+            detail_tasks.append((entry, url))
+
+    # --- DETAIL UPGRADE: fetch detail pages for the first few jobs ---
+    # Run sequentially because Playwright pages aren't concurrency-safe,
+    # but limit to MAX_DETAIL_FETCHES_PER_PORTAL so the overall scan is fast.
+    for entry, url in detail_tasks:
+        # Small randomized delay to be polite
+        await asyncio.sleep(random.uniform(0.3, 1.0))
+        detail = await fetch_job_detail(detail_page, url, portal.portal_type)
+        if not detail:
+            continue
+        # Post-fetch validation
+        detail_title_lower = (detail.get("title") or "").lower()
+        if any(kw in detail_title_lower for kw in SKIP_TITLE_KW):
+            continue
+        if len(detail.get("full_text") or "") < 100:
+            continue
+
+        # Update the job in DB with the richer data + screenshot path.
+        # If the detail fetch found a phone number etc., it'll be picked up
+        # by analyze_and_notify_single below.
+        from ..database import get_job_by_url
+        existing = get_job_by_url(url)
+        if existing:
+            # Only overwrite the full_text if the detail version is richer
+            existing_text_len = len(existing.get("full_text") or "")
+            new_text = detail.get("full_text") or ""
+            if len(new_text) > existing_text_len:
+                from ..database import update_job_full_text_and_screenshot
+                try:
+                    update_job_full_text_and_screenshot(
+                        existing["id"], new_text, detail.get("screenshot_path") or ""
+                    )
+                except Exception as e:
+                    logger.debug(f"detail upgrade failed for {url}: {e}")
+
+    # --- ANALYZE + NOTIFY for all newly-inserted jobs (concurrent batch) ---
+    # Use a smaller concurrency to avoid hitting Gemini rate limits.
+    if new > 0:
+        # Re-fetch the newly-inserted jobs for this country+category+portal
+        # (cheaper than threading state through)
+        from ..database import list_recent_jobs_for_portal
+        recent_jobs = list_recent_jobs_for_portal(
+            country_code=country_code,
+            category=category_key,
+            portal_name=portal.name,
+            limit=new,
+        )
+        # Cap concurrency to avoid LLM/Telegram rate limits
+        semaphore = asyncio.Semaphore(3)
+        async def _process(j):
+            async with semaphore:
+                try:
+                    res = await analyze_and_notify_single(
+                        country_code,
+                        j.get("full_text") or j.get("title") or "",
+                        j["url"],
+                        user_id=user_id,
+                    )
+                    logger.info(f"    ↳ {portal.name} realtime {j['url'][:60]}… → {res['status']}")
+                except Exception as e:
+                    logger.warning(f"    ↳ realtime analyze failed for {j['url']}: {e}")
+        await asyncio.gather(*[_process(j) for j in recent_jobs], return_exceptions=True)
 
     logger.info(f"[{country_code}/{portal.name}] found={found} new={new}")
     return {"found": found, "new": new}

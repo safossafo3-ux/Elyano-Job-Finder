@@ -53,6 +53,8 @@ from .database import (
     set_saved_search_schedule, list_scheduled_searches, touch_saved_search_notified,
     VALID_SCHEDULE_FREQUENCIES,
     set_resume_path, list_scan_log,
+    # Phase 4: live scan status
+    count_jobs_since,
 )
 from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline, run_scheduled_searches
 from .telegram_bot import send_text, send_login_code_to_user
@@ -64,7 +66,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = _project_root()
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-app = FastAPI(title="JobRadar Global", version="3.0.0")
+app = FastAPI(title="JobRadar Global", version="3.1.0")
 
 _static_dir = os.path.join(BASE_DIR, "static")
 os.makedirs(_static_dir, exist_ok=True)
@@ -72,6 +74,47 @@ app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 # Phase 3: rate limit middleware
 app.add_middleware(RateLimitMiddleware)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: In-memory live scan status (not persisted — fine for dashboard UX)
+# ---------------------------------------------------------------------------
+
+# Tracks the currently-running scan (if any). Set when a scan starts,
+# updated as it progresses, cleared when it finishes.
+_LIVE_SCAN = {
+    "running": False,
+    "started_at": None,        # ISO timestamp
+    "started_at_epoch_ms": 0,  # for "jobs discovered since" counting
+    "finished_at": None,
+    "countries": None,         # list of country codes or None for all
+    "categories": None,        # list of category keys or None for all
+    "triggered_by": None,      # username of triggering user (or "scheduler")
+    "error": None,
+}
+
+
+def _mark_scan_started(countries=None, categories=None, user=None):
+    from datetime import datetime
+    _LIVE_SCAN.update({
+        "running": True,
+        "started_at": datetime.utcnow().isoformat(),
+        "started_at_epoch_ms": int(datetime.utcnow().timestamp() * 1000),
+        "finished_at": None,
+        "countries": countries,
+        "categories": categories,
+        "triggered_by": (user.get("username") if isinstance(user, dict) else None) or "scheduler",
+        "error": None,
+    })
+
+
+def _mark_scan_finished(error=None):
+    from datetime import datetime
+    _LIVE_SCAN.update({
+        "running": False,
+        "finished_at": datetime.utcnow().isoformat(),
+        "error": error,
+    })
 
 
 @app.on_event("startup")
@@ -285,13 +328,49 @@ async def api_scan_now(background_tasks: BackgroundTasks,
         log_activity(user["id"], "scan_now",
                      details={"countries": countries, "categories": categories})
 
-    background_tasks.add_task(run_scan_and_pipeline, countries, categories, user_id)
+    # Mark scan as running in the in-memory state (so /api/scan/status can report it)
+    _mark_scan_started(countries=countries, categories=categories, user=user)
+
+    # Wrap the scan so we mark it finished when done
+    async def _scan_wrapper():
+        try:
+            await run_scan_and_pipeline(countries, categories, user_id)
+        except Exception as e:
+            _mark_scan_finished(error=str(e))
+            raise
+        else:
+            _mark_scan_finished()
+
+    background_tasks.add_task(_scan_wrapper)
     return {
         "status": "scan_started",
         "countries": countries or "all",
         "categories": categories or "all",
         "user": user.get("username") if user else None,
     }
+
+
+@app.get("/api/scan/status")
+async def api_scan_status():
+    """Live scan status. Returns:
+      - running: bool
+      - started_at: ISO timestamp (or null)
+      - finished_at: ISO timestamp (or null)
+      - countries / categories: list or null
+      - triggered_by: username or "scheduler"
+      - new_jobs_since_start: count of jobs discovered since this scan started
+      - error: string or null
+    """
+    out = dict(_LIVE_SCAN)
+    # Add live count of jobs discovered since the scan started
+    if _LIVE_SCAN["running"] and _LIVE_SCAN["started_at"]:
+        try:
+            out["new_jobs_since_start"] = count_jobs_since(_LIVE_SCAN["started_at"])
+        except Exception:
+            out["new_jobs_since_start"] = 0
+    else:
+        out["new_jobs_since_start"] = 0
+    return out
 
 
 @app.get("/api/jobs")
@@ -334,7 +413,7 @@ async def api_stats():
 @app.get("/health")
 async def health():
     """Lightweight healthcheck — no DB access. Railway hits this every few seconds."""
-    return {"status": "ok", "version": "3.0.0"}
+    return {"status": "ok", "version": "3.1.0"}
 
 
 @app.get("/api/diagnostics")
@@ -741,7 +820,16 @@ async def api_admin_scan_now(background_tasks: BackgroundTasks, request: Request
     if not is_admin(user.get("username") or ""):
         raise HTTPException(403, "Admin only")
     log_activity(user["id"], "admin_scan_now")
-    background_tasks.add_task(run_scan_and_pipeline, None, None, user["id"])
+    _mark_scan_started(countries=None, categories=None, user=user)
+    async def _scan_wrapper():
+        try:
+            await run_scan_and_pipeline(None, None, user["id"])
+        except Exception as e:
+            _mark_scan_finished(error=str(e))
+            raise
+        else:
+            _mark_scan_finished()
+    background_tasks.add_task(_scan_wrapper)
     return {"ok": True, "status": "scan_started"}
 
 

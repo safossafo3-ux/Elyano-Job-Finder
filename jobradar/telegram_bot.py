@@ -98,6 +98,13 @@ def build_caption(job: dict) -> str:
         "courier": "🛵 Courier (Glovo/Wolt/Bolt/Tazz)",
         "construction": "🏗️ Construction worker",
         "factory": "🏭 Factory worker",
+        "driver": "🚚 Driver (Truck / Taxi / Uber / Van)",
+        "warehouse": "📦 Warehouse (Picker / Packer / Forklift)",
+        "hospitality": "🍳 Hospitality (Cook / Waiter / Kitchen)",
+        "cleaning": "🧹 Cleaning (Hotel / Office / Domestic)",
+        "caregiving": "🧑‍🤝‍🧑 Caregiver (Elderly / Childcare / Nurse)",
+        "sales": "🛍️ Sales & Retail (Shop / Cashier)",
+        "security": "👮 Security guard",
     }.get(job.get("category",""), job.get("category",""))
 
     summary = job.get("ad_summary_en") or job.get("title") or "(no summary)"

@@ -350,6 +350,38 @@ def count_jobs() -> Dict[str, int]:
         return {"total": total, "eligible": eligible}
 
 
+def update_job_full_text_and_screenshot(job_id: int, full_text: str, screenshot_path: str):
+    """Update a job's full_text + screenshot_path after a detail-page upgrade fetch.
+    Used by the listing-first scraper to enrich jobs in-place."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET full_text=?, screenshot_path=? WHERE id=?",
+            (full_text[:6000], screenshot_path, job_id),
+        )
+
+
+def list_recent_jobs_for_portal(country_code: str, category: str,
+                                portal_name: str, limit: int = 15) -> List[Dict[str, Any]]:
+    """Return the most recently-inserted jobs for a given (country, category, portal).
+    Used by the scraper to enrich+analyze the batch of jobs it just inserted."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM jobs
+               WHERE country_code=? AND category=? AND portal_name=?
+               ORDER BY discovered_at DESC LIMIT ?""",
+            (country_code, category, portal_name, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def count_jobs_since(since_iso: str) -> int:
+    """Count jobs discovered since the given ISO timestamp (used by /api/scan/status)."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE discovered_at > ?", (since_iso,),
+        ).fetchone()[0]
+
+
 # ---------------------------------------------------------------------------
 # Users & auth
 # ---------------------------------------------------------------------------

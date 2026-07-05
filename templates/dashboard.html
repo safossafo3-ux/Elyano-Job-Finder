@@ -102,27 +102,49 @@
   }
   .login-card {
     width: 100%; max-width: 480px;
-    padding: 32px 28px;
+    padding: 28px 26px;
     text-align: center;
     margin: auto;
+    position: relative;
   }
   .login-card h2 {
-    font-size: 26px; margin-bottom: 8px;
+    font-size: 24px; margin-bottom: 8px;
     background: linear-gradient(135deg, #22d3ee, #818cf8);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }
-  .login-card p { color: #94a3b8; margin-bottom: 24px; font-size: 14px; line-height: 1.6; }
+  .login-card p { color: #94a3b8; margin-bottom: 16px; font-size: 14px; line-height: 1.6; }
+  /* Hero bot button — the most prominent CTA */
+  .bot-hero {
+    display: block;
+    margin: 18px 0 14px;
+    padding: 16px 22px;
+    background: linear-gradient(135deg, #22d3ee, #2196f3);
+    color: #0a1628;
+    font-weight: 700;
+    text-decoration: none;
+    border-radius: 12px;
+    font-size: 16px;
+    box-shadow: 0 6px 24px rgba(34,211,238,0.35);
+    transition: all 0.2s;
+  }
+  .bot-hero:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 32px rgba(34,211,238,0.5);
+  }
+  .bot-hero .bot-emoji { font-size: 22px; margin-right: 6px; vertical-align: middle; }
+  .bot-hero .bot-arrow { float: right; opacity: 0.8; }
+  .bot-hero-sub { color: #64748b; font-size: 12px; margin-top: 6px; }
   .login-steps {
     text-align: left;
     background: rgba(0,0,0,0.2);
-    padding: 16px;
+    padding: 14px 16px;
     border-radius: 10px;
-    margin: 16px 0;
+    margin: 12px 0;
     font-size: 13px;
     color: #cbd5e1;
   }
-  .login-steps ol { padding-left: 18px; line-height: 1.9; }
+  .login-steps ol { padding-left: 18px; line-height: 1.8; }
   .login-steps code {
     background: rgba(34,211,238,0.15);
     color: #22d3ee;
@@ -141,6 +163,22 @@
     border-radius: 8px;
     font-size: 14px;
   }
+  .username-input {
+    width: 100%;
+    padding: 14px 16px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(34,211,238,0.3);
+    border-radius: 10px;
+    color: #e6e6e6;
+    font-size: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    text-align: left;
+    letter-spacing: 0.3px;
+    margin: 8px 0 14px;
+    box-sizing: border-box;
+  }
+  .username-input:focus { outline: none; border-color: #22d3ee; background: rgba(0,0,0,0.4); }
+  .username-input::placeholder { color: #475569; }
   .code-input {
     width: 100%;
     padding: 14px;
@@ -153,8 +191,19 @@
     text-align: center;
     letter-spacing: 8px;
     margin: 12px 0;
+    box-sizing: border-box;
   }
   .code-input:focus { outline: none; border-color: #22d3ee; }
+  .login-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .login-back-btn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #94a3b8;
+    padding: 12px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
 
   /* ---------- Buttons ---------- */
   button {
@@ -504,18 +553,26 @@
     .login-card {
       max-width: 100%;
       width: 100%;
-      padding: 24px 20px;
+      padding: 24px 18px;
       border-radius: 0;
       min-height: 100vh;
       overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
     }
-    .login-card h2 { font-size: 22px; }
+    .login-card h2 { font-size: 21px; }
     .login-card p { font-size: 13px; }
-    .login-steps { padding: 12px; font-size: 12px; }
+    .bot-hero { padding: 14px 18px; font-size: 15px; margin: 14px 0 10px; }
+    .login-steps { padding: 12px 14px; font-size: 12px; }
     .login-steps ol { padding-left: 16px; line-height: 1.7; }
-    .code-input { font-size: 18px; letter-spacing: 4px; padding: 12px; }
-    button.primary { padding: 12px 20px; font-size: 14px; width: 100%; }
+    .username-input { font-size: 16px; padding: 14px 14px; }  /* 16px prevents iOS zoom */
+    .code-input { font-size: 20px; letter-spacing: 6px; padding: 12px; }
+    button.primary { padding: 12px 18px; font-size: 14px; width: 100%; }
+    .login-back-btn { padding: 12px 16px; font-size: 14px; }
     .bot-link { display: block; padding: 12px 18px; font-size: 13px; }
+    .login-actions { flex-direction: column-reverse; gap: 8px; }
+    .login-actions button { width: 100%; }
 
     .region-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
     .region-card { padding: 12px; }
@@ -579,27 +636,41 @@
     <div id="loginStep1">
       <h2>🔐 Sign in with Telegram</h2>
       <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
-      <div class="login-steps">
-        <ol>
-          <li>Enter your <b>Telegram username</b> below</li>
-          <li>Tap <b>"Send me a code"</b> — I'll open the bot for you if needed</li>
-          <li>The bot sends a <b>6-digit code</b> to your Telegram chat</li>
-          <li>Enter that code here to sign in</li>
-        </ol>
-      </div>
+
       {% if telegram_bot_username %}
-      <a class="bot-link" href="https://t.me/{{ telegram_bot_username }}" target="_blank" style="font-size:12px; padding:6px 14px;">
-        💬 Bot: @{{ telegram_bot_username }}
+      <!-- HERO BOT BUTTON — the most prominent CTA -->
+      <a class="bot-hero" href="https://t.me/{{ telegram_bot_username }}?start=bot" target="_blank" rel="noopener">
+        <span class="bot-emoji">💬</span>
+        Open <b>@{{ telegram_bot_username }}</b> in Telegram
+        <span class="bot-arrow">→</span>
       </a>
+      <div class="bot-hero-sub">
+        Tap this button → it opens the bot in Telegram → press <b>Start</b>. Then come back here and enter your username below.
+      </div>
       {% else %}
       <p style="color:#f87171; font-size:12px;">
         ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set on the server. Set it so the login link works.
       </p>
       {% endif %}
-      <input type="text" class="code-input" id="usernameInput" placeholder="your_username" autocomplete="username" style="text-align:left; letter-spacing:0.5px;">
-      <div style="display:flex; gap:8px; justify-content:center;">
+
+      <div class="login-steps">
+        <ol>
+          <li>Tap <b>"Open @{{ telegram_bot_username or 'bot' }} in Telegram"</b> above</li>
+          <li>Press <b>Start</b> in Telegram (this registers you)</li>
+          <li>Come back here and type your <b>Telegram username</b></li>
+          <li>Tap <b>"Send me a code"</b> — the bot DMs you a 6-digit code</li>
+          <li>Type the code here to sign in ✓</li>
+        </ol>
+      </div>
+
+      <input type="text" class="username-input" id="usernameInput"
+             placeholder="your Telegram username (no @)"
+             autocomplete="username" autocapitalize="none" spellcheck="false">
+
+      <div class="login-actions">
         <button class="primary" id="requestCodeBtn" onclick="requestCode()">Send me a code →</button>
       </div>
+
       <!-- Deep-link panel — shown if the user hasn't /start-ed the bot yet -->
       <div id="loginNeedsStart" style="display:none; margin-top:18px; padding:14px; background:rgba(34,211,238,0.08); border:1px solid rgba(34,211,238,0.3); border-radius:10px;">
         <div style="color:#22d3ee; font-size:14px; font-weight:600; margin-bottom:6px;">👋 First-time here?</div>
@@ -608,15 +679,15 @@
           Tap the button below — it opens the bot, registers you, and sends your
           login code <b>automatically</b>.
         </p>
-        <a class="bot-link" id="deepLinkBtn" href="#" target="_blank" style="display:block;">
-          💬 Open bot & send my code
+        <a class="bot-link" id="deepLinkBtn" href="#" target="_blank" rel="noopener" style="display:block;">
+          💬 Open bot &amp; send my code
         </a>
         <p style="margin-top:10px; font-size:11px; color:#64748b;">
           After tapping, come back here and click "Send me a code" again — your
           code will arrive in Telegram in seconds.
         </p>
       </div>
-      <p style="margin-top:16px; font-size:11px; color:#64748b;">
+      <p style="margin-top:14px; font-size:11px; color:#64748b;">
         💡 Tip: your Telegram username is in <b>Settings → Username</b> in the Telegram app. No <code>@</code> needed.
       </p>
     </div>
@@ -626,11 +697,11 @@
       <h2>📲 Enter your code</h2>
       <p id="codeSentMsg">A 6-digit code was sent to your Telegram chat.</p>
       <input type="text" class="code-input" id="codeInput" placeholder="••••••" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
-      <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
-        <button class="ghost" onclick="backToStep1()">← Back</button>
-        <button class="primary" id="verifyCodeBtn" onclick="verifyCode()">Verify & sign in ✓</button>
+      <div class="login-actions">
+        <button class="login-back-btn" onclick="backToStep1()">← Back</button>
+        <button class="primary" id="verifyCodeBtn" onclick="verifyCode()">Verify &amp; sign in ✓</button>
       </div>
-      <p style="margin-top:16px; font-size:11px; color:#64748b;">
+      <p style="margin-top:14px; font-size:11px; color:#64748b;">
         ⏱️ Code expires in 10 minutes.
         <a href="#" onclick="requestCode(); return false;" style="color:#22d3ee; margin-left:8px;">Resend code</a>
       </p>
@@ -1460,6 +1531,9 @@ function renderSummary() {
 // ============================================================
 // Search
 // ============================================================
+let _scanPollTimer = null;
+let _scanStartedAt = null;
+
 async function startSearch() {
   if (!state.user) {
     showToast('Please sign in first', true);
@@ -1469,15 +1543,40 @@ async function startSearch() {
   const countries = [...state.selectedCountries].join(',');
   const cats = [...state.selectedCategories].join(',');
   document.getElementById('scanBanner').classList.add('show');
+  document.getElementById('scanBanner').innerHTML = `
+    <div class="scan-spinner"></div>
+    <div>
+      <div style="font-weight:600; color:#22d3ee;">Scan running… <span id="scanProgress" style="font-weight:400; color:#94a3b8;">0 new jobs found</span></div>
+      <div style="font-size:12px; color:#94a3b8;">Watch your Telegram — alerts arrive in real-time as jobs are found.</div>
+    </div>
+  `;
   showToast('⚡ Scan started — watch your Telegram!', 'info');
   try {
     const r = await fetch(`/api/scan/now?country=${countries}&category=${cats}`, { method: 'POST' });
     const d = await r.json();
     console.log('Scan started:', d);
-    // Poll stats periodically
-    setTimeout(loadJobs, 30000);
-    setTimeout(loadJobs, 90000);
-    setTimeout(loadJobs, 180000);
+    // Poll scan status + reload jobs every 8 seconds while the scan is running
+    _scanStartedAt = Date.now();
+    if (_scanPollTimer) clearInterval(_scanPollTimer);
+    _scanPollTimer = setInterval(async () => {
+      try {
+        const sr = await fetch('/api/scan/status');
+        const sd = await sr.json();
+        const prog = document.getElementById('scanProgress');
+        if (prog) {
+          prog.textContent = `${sd.new_jobs_since_start || 0} new jobs found` +
+            (sd.running ? '' : ' · scan finished');
+        }
+        // Reload jobs list to show newly-discovered ones
+        await loadJobs();
+        // Stop polling once the scan has finished AND we've polled for at least 30s
+        if (!sd.running && (Date.now() - _scanStartedAt) > 25000) {
+          if (_scanPollTimer) { clearInterval(_scanPollTimer); _scanPollTimer = null; }
+          document.getElementById('scanBanner').classList.remove('show');
+          showToast(`✅ Scan complete — ${sd.new_jobs_since_start || 0} new jobs found`);
+        }
+      } catch (e) { /* ignore poll errors */ }
+    }, 8000);
   } catch (e) {
     showToast('Scan failed: ' + e.message, true);
     document.getElementById('scanBanner').classList.remove('show');
@@ -1568,7 +1667,18 @@ function countryFlag(code) {
 }
 
 function categoryLabel(key) {
-  const m = {courier:'🛵 Courier',construction:'🏗️ Construction',factory:'🏭 Factory'};
+  const m = {
+    courier:'🛵 Courier',
+    construction:'🏗️ Construction',
+    factory:'🏭 Factory',
+    driver:'🚚 Driver',
+    warehouse:'📦 Warehouse',
+    hospitality:'🍳 Hospitality',
+    cleaning:'🧹 Cleaning',
+    caregiving:'🧑‍🤝‍🧑 Caregiving',
+    sales:'🛍️ Sales',
+    security:'👮 Security'
+  };
   return m[key] || key;
 }
 

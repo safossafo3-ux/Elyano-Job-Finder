@@ -38,7 +38,7 @@ Your task: return ONLY valid JSON with the following shape (no markdown, no comm
   "phone_raw": "the raw phone string as it appears in the ad, or empty string if none",
   "phone_normalized": "phone normalized to E.164 with the country dial code, e.g. +38163123456, or empty if none",
   "company": "employer name if mentioned, otherwise empty string",
-  "is_relevant": true | false   // true if the ad is actually for courier/construction/factory work; false if it's unrelated (e.g. a banner, a CV, a manager role)
+  "is_relevant": true | false   // true if the ad is actually for one of: courier, construction, factory, driver, warehouse, hospitality (cook/waiter), cleaning, caregiving, sales/retail, security guard. false if it's unrelated (e.g. a banner, a CV, a manager role, a coding/tech job that doesn't match these categories)
 }}
 
 Ad text (truncated to 6000 chars):
