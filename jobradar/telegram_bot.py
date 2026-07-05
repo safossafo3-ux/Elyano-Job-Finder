@@ -286,10 +286,11 @@ async def send_login_code_to_user(username: str) -> dict:
     user = get_user_by_username(clean_username)
 
     if not user:
-        # Build a deep link the user can click to open the bot with a pre-filled /start.
-        # When they click it, Telegram opens the bot with /start login_<username>,
-        # the bot auto-registers them and immediately sends their login code.
-        deep_link = f"https://t.me/{bot_username}?start=login_{clean_username}"
+        # Build a simple deep link to open the bot in Telegram. We use the bare
+        # t.me/<bot> URL (no ?start= param) because the start parameter was
+        # causing 404s in some Telegram clients. The user just needs to press
+        # "Start" in the bot chat manually.
+        deep_link = f"https://t.me/{bot_username}"
         return {
             "ok": False,
             "needs_start": True,
@@ -297,14 +298,14 @@ async def send_login_code_to_user(username: str) -> dict:
             "bot_username": bot_username,
             "error": (
                 f"You haven't connected your Telegram to @{bot_username} yet. "
-                f"Tap the button below to open the bot — it will register you and "
-                f"send your login code automatically."
+                f"Tap the button below to open the bot in Telegram, then press "
+                f"Start. After that, come back here and click \"Send me a code\" again."
             ),
         }
 
     chat_id = int(user.get("telegram_chat_id") or 0)
     if not chat_id:
-        deep_link = f"https://t.me/{bot_username}?start=login_{clean_username}"
+        deep_link = f"https://t.me/{bot_username}"
         return {
             "ok": False,
             "needs_start": True,

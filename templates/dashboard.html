@@ -135,11 +135,6 @@
   .bot-hero .bot-emoji { font-size: 22px; margin-right: 6px; vertical-align: middle; }
   .bot-hero .bot-arrow { float: right; opacity: 0.8; }
   .bot-hero-sub { color: #64748b; font-size: 12px; margin-top: 6px; }
-  .bot-fallback-row {
-    margin-top: -6px;
-    margin-bottom: 8px;
-    text-align: center;
-  }
   .login-steps {
     text-align: left;
     background: rgba(0,0,0,0.2);
@@ -569,7 +564,6 @@
     .login-card h2 { font-size: 21px; }
     .login-card p { font-size: 13px; }
     .bot-hero { padding: 14px 18px; font-size: 15px; margin: 14px 0 10px; }
-    .bot-fallback-row { margin-top: -4px; margin-bottom: 10px; }
     .login-steps { padding: 12px 14px; font-size: 12px; }
     .login-steps ol { padding-left: 16px; line-height: 1.7; }
     .username-input { font-size: 16px; padding: 14px 14px; }  /* 16px prevents iOS zoom */
@@ -644,22 +638,17 @@
       <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
 
       {% if telegram_bot_username %}
-      <!-- HERO BOT BUTTON — opens the Telegram APP directly via tg:// deep-link -->
+      <!-- HERO BOT BUTTON — opens t.me/<bot> which auto-launches the Telegram app
+           on mobile/desktop, and shows the bot's preview page on the web. -->
       <a class="bot-hero" id="botHeroBtn"
-         href="tg://resolve?domain={{ telegram_bot_username }}&amp;start=bot"
-         onclick="return openTelegram(event, 'tg://resolve?domain={{ telegram_bot_username }}&start=bot', 'https://t.me/{{ telegram_bot_username }}?start=bot');">
+         href="https://t.me/{{ telegram_bot_username }}"
+         target="_blank" rel="noopener">
         <span class="bot-emoji">💬</span>
         Open <b>@{{ telegram_bot_username }}</b> in Telegram
         <span class="bot-arrow">→</span>
       </a>
       <div class="bot-hero-sub">
-        Tap this button → it opens the Telegram <b>app</b> → press <b>Start</b>. Then come back here and enter your username below.
-      </div>
-      <!-- Fallback link for desktop users without the Telegram app installed -->
-      <div class="bot-fallback-row">
-        <span style="color:#64748b; font-size:11px;">No Telegram app? Open the</span>
-        <a href="https://t.me/{{ telegram_bot_username }}?start=bot" target="_blank" rel="noopener"
-           style="color:#22d3ee; font-size:11px; margin-left:4px; text-decoration:underline;">web version ↗</a>
+        Tap this button → it opens Telegram → press <b>Start</b> in the bot chat. Then come back here and enter your username below.
       </div>
       {% else %}
       <p style="color:#f87171; font-size:12px;">
@@ -689,15 +678,16 @@
       <div id="loginNeedsStart" style="display:none; margin-top:18px; padding:14px; background:rgba(34,211,238,0.08); border:1px solid rgba(34,211,238,0.3); border-radius:10px;">
         <div style="color:#22d3ee; font-size:14px; font-weight:600; margin-bottom:6px;">👋 First-time here?</div>
         <p style="color:#cbd5e1; font-size:13px; line-height:1.5; margin-bottom:10px;">
-          You need to open the bot once in Telegram so it can send you messages.
-          Tap the button below — it opens the bot, registers you, and sends your
-          login code <b>automatically</b>.
+          You need to open the bot once in Telegram and press <b>Start</b> so it can send you messages.
+          Tap the button below to open the bot in Telegram.
         </p>
-        <a class="bot-link" id="deepLinkBtn" href="#" target="_blank" rel="noopener" style="display:block;">
-          💬 Open bot &amp; send my code
+        <a class="bot-link" id="deepLinkBtn"
+           href="https://t.me/{{ telegram_bot_username }}"
+           target="_blank" rel="noopener" style="display:block;">
+          💬 Open @{{ telegram_bot_username }} in Telegram
         </a>
         <p style="margin-top:10px; font-size:11px; color:#64748b;">
-          After tapping, come back here and click "Send me a code" again — your
+          After pressing <b>Start</b> in Telegram, come back here and click "Send me a code" again — your
           code will arrive in Telegram in seconds.
         </p>
       </div>
@@ -927,32 +917,6 @@ const state = {
 };
 
 // ============================================================
-// Telegram deep-link helper — opens the Telegram app via tg:// protocol,
-// with a fallback to the t.me web URL if the app isn't installed.
-// ============================================================
-function openTelegram(event, appUrl, webUrl) {
-  if (event) event.preventDefault();
-  // Try to open the tg:// app URL. On desktop without the app, this silently
-  // fails — so we also open the web URL as a fallback after a short delay.
-  let opened = false;
-  try {
-    const w = window.open(appUrl, '_self');
-    if (w) opened = true;
-  } catch (e) { opened = false; }
-
-  // If on desktop (no touch) and the app didn't open, fall back to web URL.
-  if (!opened || window.matchMedia('(pointer: fine)').matches) {
-    setTimeout(() => {
-      // Only fall back if the user is still on this page (didn't switch to app)
-      if (!document.hidden) {
-        window.open(webUrl, '_blank', 'noopener');
-      }
-    }, 800);
-  }
-  return false;
-}
-
-// ============================================================
 // Init
 // ============================================================
 async function init() {
@@ -1042,25 +1006,18 @@ async function requestCode() {
         panel.style.display = 'block';
         const link = document.getElementById('deepLinkBtn');
         if (link) {
-          // Convert the t.me web URL → tg:// app URL so it opens the Telegram app directly.
-          // e.g. https://t.me/EuropaElyano_bot?start=login_foo → tg://resolve?domain=EuropaElyano_bot&start=login_foo
-          const webUrl = d.deep_link;
-          let appUrl = webUrl;
+          // Use the simple t.me/<bot> URL (no ?start= param) — this auto-opens
+          // the Telegram app on mobile/desktop and shows the bot page on the web.
+          // We ignore the deep_link URL from the backend (which had ?start=login_<user>)
+          // because that was causing 404s in some Telegram clients.
           try {
-            const u = new URL(webUrl);
-            if (u.hostname === 't.me') {
-              const bot = u.pathname.replace(/^\//, '');
-              const start = u.searchParams.get('start') || '';
-              appUrl = `tg://resolve?domain=${bot}&start=${start}`;
-            }
-          } catch (e) { /* fall back to web URL */ }
-          link.href = appUrl;
-          // Wire up the click handler: try app first, fall back to web
-          link.onclick = function (e) {
-            e.preventDefault();
-            openTelegram(e, appUrl, webUrl);
-            return false;
-          };
+            const u = new URL(d.deep_link);
+            const bot = u.pathname.replace(/^\//, '');
+            link.href = `https://t.me/${bot}`;
+          } catch (e) {
+            // Fallback: use the bot username from state
+            link.href = `https://t.me/${state.botUsername || 'EuropaElyano_bot'}`;
+          }
         }
       }
       btn.disabled = false; btn.textContent = 'Send me a code →';
