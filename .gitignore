@@ -44,3 +44,4 @@ agent-ctx/
 *.db-journal
 *.sqlite
 *.sqlite3
+tool-results/

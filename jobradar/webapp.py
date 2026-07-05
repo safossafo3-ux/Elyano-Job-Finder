@@ -147,15 +147,37 @@ class VerifyCodeRequest(BaseModel):
 @app.post("/api/auth/request-code")
 async def api_request_code(req: RequestCodeRequest):
     """Step 1: user enters their Telegram username → bot sends a 6-digit code
-    to that user's Telegram chat."""
+    to that user's Telegram chat.
+
+    If the user hasn't sent /start to the bot yet, returns a `needs_start: true`
+    flag with a `deep_link` that the frontend can show as a button."""
     username = (req.username or "").strip().lstrip("@")
     if not username:
         raise HTTPException(400, "Username is required")
+
+    # Validate that it looks like a Telegram username: 5–32 chars, [a-zA-Z0-9_]
+    if not all(c.isalnum() or c == "_" for c in username):
+        raise HTTPException(400, "Telegram usernames only contain letters, numbers, and underscores.")
+    if len(username) < 5 or len(username) > 32:
+        raise HTTPException(400, "Telegram usernames are 5–32 characters long.")
+
     result = await send_login_code_to_user(username)
     if not result.get("ok"):
-        # Don't leak whether the username exists — return a generic message but include the bot hint
-        msg = result.get("error") or "Failed to send code."
-        raise HTTPException(404, msg)
+        # If we have a deep link, return it as a structured response so the
+        # frontend can render a "Open bot in Telegram" button.
+        if result.get("needs_start"):
+            return JSONResponse(
+                status_code=200,  # 200, not 4xx — this is an expected flow
+                content={
+                    "ok": False,
+                    "needs_start": True,
+                    "deep_link": result["deep_link"],
+                    "bot_username": result["bot_username"],
+                    "message": result["error"],
+                },
+            )
+        # Genuine error
+        raise HTTPException(400, result.get("error") or "Failed to send code.")
     return {
         "ok": True,
         "message": f"Code sent to your Telegram chat (@{settings.TELEGRAM_BOT_USERNAME or 'our bot'}).",

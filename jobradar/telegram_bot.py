@@ -158,8 +158,46 @@ async def handle_update(update: dict) -> Optional[dict]:
         register_telegram_user(tg_user_id, chat_id, username, first_name)
 
         bot_link = settings.WEBAPP_PUBLIC_URL or "(the dashboard URL)"
+        bot_username = settings.TELEGRAM_BOT_USERNAME or "our_bot"
 
-        if not username:
+        # Parse the start payload — format: /start login_<requested_username>
+        # If the user came from the deep-link on the website, we may be able to
+        # auto-send them a login code right now if their actual Telegram username
+        # doesn't match what they typed on the website.
+        payload = ""
+        if " " in text:
+            payload = text.split(" ", 1)[1].strip()
+
+        auto_sent_code = False
+        if payload.startswith("login_"):
+            # They came from the website "Send me a code" button.
+            requested_username = payload[len("login_"):].lstrip("@").strip()
+            if requested_username and requested_username.lower() != (username or "").lower():
+                await send_text(chat_id,
+                    f"📝 Quick note: you typed <code>{requested_username}</code> on the dashboard, "
+                    f"but your actual Telegram username is <code>@{username or '(none)'}</code>.\n\n"
+                    f"Going forward, please use your real Telegram username on the dashboard."
+                )
+            # Auto-send the login code right now — they've effectively completed /start.
+            try:
+                result = await send_login_code_to_user(username or requested_username)
+                if result.get("ok"):
+                    await send_text(chat_id,
+                        f"✅ <b>You're all set, {first_name or username or 'friend'}!</b>\n\n"
+                        f"I just sent your 6-digit login code above. Enter it on the dashboard to sign in.\n"
+                        f"🌐 Dashboard: {bot_link}"
+                    )
+                    auto_sent_code = True
+                else:
+                    err = result.get("error", "")
+                    await send_text(chat_id,
+                        f"⚠️ Couldn't auto-send your login code: {err}\n\n"
+                        f"👉 Go back to the dashboard and click \"Send me a code\" again."
+                    )
+            except Exception as e:
+                logger.error(f"Auto-send code failed: {e}")
+
+        if not username and not auto_sent_code:
             await send_text(chat_id,
                 f"👋 Welcome to JobRadar, {first_name or 'friend'}!\n\n"
                 f"⚠️ <b>Important:</b> Your Telegram account doesn't have a public username set, "
@@ -172,16 +210,17 @@ async def handle_update(update: dict) -> Optional[dict]:
             )
             return {"status": "no_username"}
 
-        display_name = f"@{username}"
-        await send_text(chat_id,
-            f"✅ <b>You're registered, {first_name or display_name}!</b>\n\n"
-            f"Your Telegram username <code>@{username}</code> is now your JobRadar login.\n\n"
-            f"👉 Go to the dashboard, enter <code>{username}</code>, "
-            f"and I'll send a 6-digit login code right here.\n"
-            f"🌐 Dashboard: {bot_link}\n\n"
-            f"I'll also send you job alerts here automatically once a scan finds matches."
-        )
-        return {"status": "registered", "existing_user": bool(existing)}
+        if not auto_sent_code:
+            display_name = f"@{username}" if username else (first_name or "friend")
+            await send_text(chat_id,
+                f"✅ <b>You're registered, {first_name or display_name}!</b>\n\n"
+                f"Your Telegram username <code>@{username}</code> is now your JobRadar login.\n\n"
+                f"👉 Go to the dashboard, enter <code>{username}</code>, "
+                f"and I'll send a 6-digit login code right here.\n"
+                f"🌐 Dashboard: {bot_link}\n\n"
+                f"I'll also send you job alerts here automatically once a scan finds matches."
+            )
+        return {"status": "registered", "existing_user": bool(existing), "auto_sent_code": auto_sent_code}
 
     elif text == "/help":
         await send_text(chat_id,
@@ -199,6 +238,16 @@ async def handle_update(update: dict) -> Optional[dict]:
         )
         return {"status": "help_sent"}
 
+    # Any other text: treat as a hint
+    elif text:
+        bot_link = settings.WEBAPP_PUBLIC_URL or "(the dashboard URL)"
+        await send_text(chat_id,
+            f"👋 Hi {first_name or 'there'}! I'm the JobRadar bot.\n\n"
+            f"To get started, send me <code>/start</code> — that registers your account.\n"
+            f"Then visit the dashboard: {bot_link}"
+        )
+        return {"status": "hint_sent"}
+
     return None
 
 
@@ -209,18 +258,53 @@ async def handle_update(update: dict) -> Optional[dict]:
 async def send_login_code_to_user(username: str) -> dict:
     """Generate a 6-digit login code and send it to the user's Telegram chat.
 
-    Returns: {"ok": bool, "error": str?}
+    Returns: {"ok": bool, "error": str?, "deep_link": str?}
+    If the user hasn't sent /start to the bot yet, we return a deep_link
+    that the website can show as a clickable button.
     """
     if not settings.TELEGRAM_BOT_TOKEN:
-        return {"ok": False, "error": "Bot token not configured on the server."}
+        return {"ok": False,
+                "error": "The Telegram bot is not configured on the server. "
+                         "Please contact the administrator."}
 
-    user = get_user_by_username(username)
+    clean_username = (username or "").strip().lstrip("@").strip()
+    if not clean_username:
+        return {"ok": False, "error": "Please enter a valid Telegram username."}
+
+    bot_username = settings.TELEGRAM_BOT_USERNAME
+    if not bot_username:
+        return {"ok": False,
+                "error": "TELEGRAM_BOT_USERNAME is not configured on the server."}
+
+    user = get_user_by_username(clean_username)
+
     if not user:
-        return {"ok": False, "error": f"No account found for '@{username}'. Send /start to the bot first."}
+        # Build a deep link the user can click to open the bot with a pre-filled /start.
+        # When they click it, Telegram opens the bot with /start login_<username>,
+        # the bot auto-registers them and immediately sends their login code.
+        deep_link = f"https://t.me/{bot_username}?start=login_{clean_username}"
+        return {
+            "ok": False,
+            "needs_start": True,
+            "deep_link": deep_link,
+            "bot_username": bot_username,
+            "error": (
+                f"You haven't connected your Telegram to @{bot_username} yet. "
+                f"Tap the button below to open the bot — it will register you and "
+                f"send your login code automatically."
+            ),
+        }
 
     chat_id = int(user.get("telegram_chat_id") or 0)
     if not chat_id:
-        return {"ok": False, "error": "Your account has no chat_id. Send /start to the bot again."}
+        deep_link = f"https://t.me/{bot_username}?start=login_{clean_username}"
+        return {
+            "ok": False,
+            "needs_start": True,
+            "deep_link": deep_link,
+            "bot_username": bot_username,
+            "error": "Your account is missing a chat_id. Tap the button below to refresh.",
+        }
 
     # Create the 6-digit code (also expires old ones)
     code = create_login_code(
