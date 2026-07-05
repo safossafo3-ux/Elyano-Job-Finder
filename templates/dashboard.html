@@ -638,17 +638,20 @@
       <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
 
       {% if telegram_bot_username %}
-      <!-- HERO BOT BUTTON — uses tg:// deep-link to launch the Telegram APP directly.
-           Falls back to https://t.me/<bot> only if the app isn't installed. -->
+      <!-- HERO BOT BUTTON — uses tg:// deep-link with ?start= parameter to launch
+           the Telegram APP directly AND open the bot CHAT (not the profile page).
+           The ?start=app parameter is Telegram's official deep-linking mechanism:
+           it tells Telegram to skip the bot profile page and open a chat with a
+           pre-filled /start command ready to send. -->
       <a class="bot-hero" id="botHeroBtn"
-         href="tg://resolve?domain={{ telegram_bot_username }}"
-         onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');">
+         href="tg://resolve?domain={{ telegram_bot_username }}&amp;start=app"
+         onclick="return openTelegramApp(event, '{{ telegram_bot_username }}', 'app');">
         <span class="bot-emoji">💬</span>
         Open <b>@{{ telegram_bot_username }}</b> in Telegram
         <span class="bot-arrow">→</span>
       </a>
       <div class="bot-hero-sub">
-        Tap this button → it opens the Telegram <b>app</b> directly → press <b>Start</b> in the bot chat. Then come back here and enter your username below.
+        Tap this button → it opens the Telegram <b>app</b> directly in the bot chat → press <b>Start</b>. Then come back here and enter your username below.
       </div>
       {% else %}
       <p style="color:#f87171; font-size:12px;">
@@ -682,8 +685,8 @@
           Tap the button below to open the bot in Telegram.
         </p>
         <a class="bot-link" id="deepLinkBtn"
-           href="tg://resolve?domain={{ telegram_bot_username }}"
-           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
+           href="tg://resolve?domain={{ telegram_bot_username }}&amp;start=app"
+           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}', 'app');"
            style="display:block;">
           💬 Open @{{ telegram_bot_username }} in Telegram
         </a>
@@ -919,13 +922,30 @@ const state = {
 
 // ============================================================
 // Telegram app launcher — uses tg:// deep-link to open the Telegram APP
-// directly (not the t.me website). Falls back to https://t.me/<bot>
+// directly (not the t.me website). Falls back to https://t.me/<bot>?start=<param>
 // only if the app isn't installed (detected via visibility change).
+//
+// The ?start=<param> parameter is Telegram's OFFICIAL bot deep-linking mechanism
+// (https://core.telegram.org/bots#deep-linking). It tells Telegram to:
+//   1. Skip the bot's profile/info page
+//   2. Open the bot CHAT directly
+//   3. Pre-fill the chat input with "/start <param>"
+//   4. The user just taps Send to begin the conversation
+//
+// Without ?start=, Telegram opens the bot's profile page (showing
+// "Message / Mute / Share / Stop" buttons) and the user has to manually
+// tap "Message" to start a chat — which is confusing.
 // ============================================================
-function openTelegramApp(event, botUsername) {
+function openTelegramApp(event, botUsername, startParam) {
   if (event) event.preventDefault();
-  const appUrl = `tg://resolve?domain=${encodeURIComponent(botUsername)}`;
-  const webUrl = `https://t.me/${botUsername}`;
+  const domain = encodeURIComponent(botUsername);
+  // Build the tg:// app URL with the ?start= parameter
+  const start = startParam ? `&start=${encodeURIComponent(startParam)}` : '';
+  const appUrl = `tg://resolve?domain=${domain}${start}`;
+  // Build the https://t.me/<bot>?start=<param> fallback URL
+  const webUrl = startParam
+    ? `https://t.me/${botUsername}?start=${encodeURIComponent(startParam)}`
+    : `https://t.me/${botUsername}`;
 
   // Track whether the Telegram app successfully opened.
   // If the app launches, the page loses visibility ("hidden").
@@ -1059,17 +1079,17 @@ async function requestCode() {
         const link = document.getElementById('deepLinkBtn');
         if (link) {
           // Extract the bot username from the backend's deep_link (or use state),
-          // then point the href at the tg:// app deep-link and wire up the
-          // openTelegramApp helper to launch the app directly with web fallback.
+          // then point the href at the tg:// app deep-link with ?start=app
+          // parameter to open the bot CHAT directly (not the profile page).
           let bot = state.botUsername || 'EuropaElyano_bot';
           try {
             const u = new URL(d.deep_link);
             bot = u.pathname.replace(/^\//, '') || bot;
           } catch (e) { /* use default */ }
-          link.href = `tg://resolve?domain=${bot}`;
+          link.href = `tg://resolve?domain=${bot}&start=app`;
           link.onclick = function (e) {
             e.preventDefault();
-            return openTelegramApp(e, bot);
+            return openTelegramApp(e, bot, 'app');
           };
         }
       }
