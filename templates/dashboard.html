@@ -638,17 +638,17 @@
       <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
 
       {% if telegram_bot_username %}
-      <!-- HERO BOT BUTTON — opens t.me/<bot> which auto-launches the Telegram app
-           on mobile/desktop, and shows the bot's preview page on the web. -->
+      <!-- HERO BOT BUTTON — uses tg:// deep-link to launch the Telegram APP directly.
+           Falls back to https://t.me/<bot> only if the app isn't installed. -->
       <a class="bot-hero" id="botHeroBtn"
-         href="https://t.me/{{ telegram_bot_username }}"
-         target="_blank" rel="noopener">
+         href="tg://resolve?domain={{ telegram_bot_username }}"
+         onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');">
         <span class="bot-emoji">💬</span>
         Open <b>@{{ telegram_bot_username }}</b> in Telegram
         <span class="bot-arrow">→</span>
       </a>
       <div class="bot-hero-sub">
-        Tap this button → it opens Telegram → press <b>Start</b> in the bot chat. Then come back here and enter your username below.
+        Tap this button → it opens the Telegram <b>app</b> directly → press <b>Start</b> in the bot chat. Then come back here and enter your username below.
       </div>
       {% else %}
       <p style="color:#f87171; font-size:12px;">
@@ -682,8 +682,9 @@
           Tap the button below to open the bot in Telegram.
         </p>
         <a class="bot-link" id="deepLinkBtn"
-           href="https://t.me/{{ telegram_bot_username }}"
-           target="_blank" rel="noopener" style="display:block;">
+           href="tg://resolve?domain={{ telegram_bot_username }}"
+           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
+           style="display:block;">
           💬 Open @{{ telegram_bot_username }} in Telegram
         </a>
         <p style="margin-top:10px; font-size:11px; color:#64748b;">
@@ -917,6 +918,57 @@ const state = {
 };
 
 // ============================================================
+// Telegram app launcher — uses tg:// deep-link to open the Telegram APP
+// directly (not the t.me website). Falls back to https://t.me/<bot>
+// only if the app isn't installed (detected via visibility change).
+// ============================================================
+function openTelegramApp(event, botUsername) {
+  if (event) event.preventDefault();
+  const appUrl = `tg://resolve?domain=${encodeURIComponent(botUsername)}`;
+  const webUrl = `https://t.me/${botUsername}`;
+
+  // Track whether the Telegram app successfully opened.
+  // If the app launches, the page loses visibility ("hidden").
+  let appOpened = false;
+  const onVisChange = () => {
+    if (document.hidden) appOpened = true;
+  };
+  document.addEventListener('visibilitychange', onVisChange);
+
+  // Technique 1: hidden iframe — most reliable on iOS Safari (which blocks
+  // window.location redirects to custom schemes in some cases).
+  try {
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.src = appUrl;
+    document.body.appendChild(iframe);
+    // Remove the iframe after 100ms — by then the OS has either launched
+    // the app or ignored the scheme.
+    setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) {} }, 100);
+  } catch (e) { /* iframe failed, try location redirect below */ }
+
+  // Technique 2: also set window.location.href — works on Android + desktop.
+  // Wrapped in try/catch because some browsers throw on unknown schemes.
+  try {
+    window.location.href = appUrl;
+  } catch (e) { /* ignore */ }
+
+  // Fallback: after 1.5 seconds, if the page is still visible (app didn't
+  // open), redirect to the t.me web URL so the user isn't stuck.
+  setTimeout(() => {
+    document.removeEventListener('visibilitychange', onVisChange);
+    if (!appOpened && !document.hidden) {
+      // App didn't open — user probably doesn't have Telegram installed.
+      // Open the t.me web page as a last resort.
+      console.log('Telegram app did not open, falling back to web URL');
+      window.open(webUrl, '_blank', 'noopener');
+    }
+  }, 1500);
+
+  return false;
+}
+
+// ============================================================
 // Init
 // ============================================================
 async function init() {
@@ -1006,18 +1058,19 @@ async function requestCode() {
         panel.style.display = 'block';
         const link = document.getElementById('deepLinkBtn');
         if (link) {
-          // Use the simple t.me/<bot> URL (no ?start= param) — this auto-opens
-          // the Telegram app on mobile/desktop and shows the bot page on the web.
-          // We ignore the deep_link URL from the backend (which had ?start=login_<user>)
-          // because that was causing 404s in some Telegram clients.
+          // Extract the bot username from the backend's deep_link (or use state),
+          // then point the href at the tg:// app deep-link and wire up the
+          // openTelegramApp helper to launch the app directly with web fallback.
+          let bot = state.botUsername || 'EuropaElyano_bot';
           try {
             const u = new URL(d.deep_link);
-            const bot = u.pathname.replace(/^\//, '');
-            link.href = `https://t.me/${bot}`;
-          } catch (e) {
-            // Fallback: use the bot username from state
-            link.href = `https://t.me/${state.botUsername || 'EuropaElyano_bot'}`;
-          }
+            bot = u.pathname.replace(/^\//, '') || bot;
+          } catch (e) { /* use default */ }
+          link.href = `tg://resolve?domain=${bot}`;
+          link.onclick = function (e) {
+            e.preventDefault();
+            return openTelegramApp(e, bot);
+          };
         }
       }
       btn.disabled = false; btn.textContent = 'Send me a code →';
