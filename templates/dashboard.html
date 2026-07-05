@@ -135,6 +135,66 @@
   .bot-hero .bot-emoji { font-size: 22px; margin-right: 6px; vertical-align: middle; }
   .bot-hero .bot-arrow { float: right; opacity: 0.8; }
   .bot-hero-sub { color: #64748b; font-size: 12px; margin-top: 6px; }
+  /* Manual search fallback box — shows the exact @<bot> handle to copy */
+  .bot-manual-search {
+    margin: 14px 0 8px;
+    padding: 12px 14px;
+    background: rgba(34,211,238,0.06);
+    border: 1px dashed rgba(34,211,238,0.3);
+    border-radius: 10px;
+    text-align: left;
+  }
+  .bot-manual-label {
+    display: block;
+    color: #94a3b8;
+    font-size: 11px;
+    margin-bottom: 8px;
+  }
+  .bot-manual-handle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .bot-manual-handle {
+    flex: 1;
+    background: rgba(0,0,0,0.4);
+    color: #22d3ee;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: "SF Mono", Monaco, monospace;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    user-select: all;
+    word-break: break-all;
+  }
+  .bot-copy-btn {
+    background: rgba(34,211,238,0.15);
+    color: #22d3ee;
+    border: 1px solid rgba(34,211,238,0.4);
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .bot-copy-btn:hover { background: rgba(34,211,238,0.25); }
+  .bot-copy-btn.copied { background: rgba(34,197,94,0.2); color: #4ade80; border-color: rgba(34,197,94,0.5); }
+  .bot-manual-hint {
+    display: block;
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .bot-manual-hint code {
+    background: rgba(34,211,238,0.15);
+    color: #22d3ee;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
   .login-steps {
     text-align: left;
     background: rgba(0,0,0,0.2);
@@ -638,20 +698,32 @@
       <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
 
       {% if telegram_bot_username %}
-      <!-- HERO BOT BUTTON — uses tg://search?query=@<bot> deep-link to launch
-           the Telegram APP directly with the bot username pre-filled in the
-           search bar. The user just taps on the bot in the search results to
-           open the chat. This is more reliable than tg://resolve (which was
-           sometimes opening the bot's profile page instead of the chat). -->
+      <!-- HERO BOT BUTTON — uses tg://resolve?domain=<bot> deep-link to launch
+           the Telegram APP directly and open the bot's chat.
+           Below the button we also show the exact @<bot> handle so the user
+           can copy-paste it into Telegram's search bar if the deep-link
+           doesn't pre-fill it on their device. -->
       <a class="bot-hero" id="botHeroBtn"
-         href="tg://search?query=@{{ telegram_bot_username | lower }}"
-         onclick="return openTelegramApp(event, '{{ telegram_bot_username }}', 'search');">
+         href="tg://resolve?domain={{ telegram_bot_username | lower }}"
+         onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');">
         <span class="bot-emoji">💬</span>
         Open <b>@{{ telegram_bot_username }}</b> in Telegram
         <span class="bot-arrow">→</span>
       </a>
       <div class="bot-hero-sub">
-        Tap this button → it opens the Telegram <b>app</b> with <code>@{{ telegram_bot_username | lower }}</code> in the search bar → tap the bot in the results → press <b>Start</b>. Then come back here and enter your username below.
+        Tap the button → it opens the Telegram app and goes straight to the bot chat → press <b>Start</b>. Then come back here and enter your username below.
+      </div>
+      <!-- Manual search fallback — if the deep-link doesn't open the bot chat
+           directly on the user's device, they can copy this exact handle and
+           paste it into Telegram's search bar. -->
+      <div class="bot-manual-search">
+        <span class="bot-manual-label">If Telegram doesn't open the bot automatically, search for:</span>
+        <div class="bot-manual-handle-row">
+          <code class="bot-manual-handle" id="botHandleText">@{{ telegram_bot_username | lower }}</code>
+          <button type="button" class="bot-copy-btn" id="botCopyBtn"
+                  onclick="copyBotHandle('{{ telegram_bot_username | lower }}')">Copy</button>
+        </div>
+        <span class="bot-manual-hint">Open Telegram → tap the magnifying glass 🔍 → paste <code>@{{ telegram_bot_username | lower }}</code> → tap the bot → press <b>Start</b>.</span>
       </div>
       {% else %}
       <p style="color:#f87171; font-size:12px;">
@@ -685,8 +757,8 @@
           Tap the button below to open the bot in Telegram.
         </p>
         <a class="bot-link" id="deepLinkBtn"
-           href="tg://search?query=@{{ telegram_bot_username | lower }}"
-           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}', 'search');"
+           href="tg://resolve?domain={{ telegram_bot_username | lower }}"
+           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
            style="display:block;">
           💬 Open @{{ telegram_bot_username }} in Telegram
         </a>
@@ -922,29 +994,26 @@ const state = {
 
 // ============================================================
 // Telegram app launcher — opens the Telegram APP directly (not the t.me
-// website) with the bot username pre-filled in the search bar.
+// website) and tries to open the bot's chat via tg://resolve.
 //
-// Uses the tg://search?query=@<bot> deep-link scheme:
-//   1. Launches the Telegram app directly (via tg:// protocol)
-//   2. Opens the search screen with @<bot> pre-filled in the search bar
-//   3. The bot appears at the top of the search results
-//   4. User taps the bot → tap Start → registered
+// tg://resolve?domain=<bot> is Telegram's OFFICIAL deep-link scheme for
+// opening a bot/user chat. On most clients it opens the chat directly;
+// on some it opens the bot's profile page first (the user then taps
+// "Message" to start the chat).
 //
-// This is more reliable than tg://resolve?domain=<bot> (which sometimes
-// opens the bot's profile/info page instead of the chat) and more
-// reliable than tg://resolve?domain=<bot>&start=<param> (which sometimes
-// fails silently on certain Telegram client versions).
+// If the deep-link doesn't behave as expected on the user's device, we
+// also show a visible "@<bot>" handle with a Copy button so the user can
+// manually paste it into Telegram's search bar.
 //
 // Falls back to https://t.me/<bot> only if the Telegram app isn't
 // installed (detected via visibility change after 1.5 seconds).
 // ============================================================
-function openTelegramApp(event, botUsername, mode) {
+function openTelegramApp(event, botUsername) {
   if (event) event.preventDefault();
   const lowerBot = (botUsername || '').toLowerCase();
 
-  // Primary URL: tg://search with the bot username pre-filled in the search bar.
-  // This opens the Telegram app and shows search results with the bot at the top.
-  const appUrl = `tg://search?query=@${encodeURIComponent(lowerBot)}`;
+  // Primary URL: tg://resolve opens the bot's chat in the Telegram app.
+  const appUrl = `tg://resolve?domain=${encodeURIComponent(lowerBot)}`;
   // Fallback URL: t.me web page (used only if the app isn't installed)
   const webUrl = `https://t.me/${botUsername}`;
 
@@ -987,6 +1056,42 @@ function openTelegramApp(event, botUsername, mode) {
   }, 1500);
 
   return false;
+}
+
+// ============================================================
+// Copy the bot handle to the clipboard so the user can paste it into
+// Telegram's search bar manually if the deep-link doesn't work.
+// ============================================================
+async function copyBotHandle(botUsername) {
+  const handle = `@${(botUsername || '').toLowerCase()}`;
+  const btn = document.getElementById('botCopyBtn');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(handle);
+    } else {
+      // Fallback for older browsers / non-HTTPS contexts
+      const ta = document.createElement('textarea');
+      ta.value = handle;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    if (btn) {
+      const originalText = btn.textContent;
+      btn.textContent = '✓ Copied';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.classList.remove('copied');
+      }, 2000);
+    }
+    showToast(`Copied ${handle} — paste it into Telegram's search bar`, 'info');
+  } catch (e) {
+    showToast('Could not copy automatically. Long-press the handle to copy manually.', true);
+  }
 }
 
 // ============================================================
@@ -1080,17 +1185,17 @@ async function requestCode() {
         const link = document.getElementById('deepLinkBtn');
         if (link) {
           // Extract the bot username from the backend's deep_link (or use state),
-          // then point the href at the tg://search deep-link so Telegram opens
-          // with @<bot> pre-filled in the search bar.
+          // then point the href at the tg://resolve deep-link so Telegram opens
+          // the bot's chat directly.
           let bot = state.botUsername || 'EuropaElyano_bot';
           try {
             const u = new URL(d.deep_link);
             bot = u.pathname.replace(/^\//, '') || bot;
           } catch (e) { /* use default */ }
-          link.href = `tg://search?query=@${bot.toLowerCase()}`;
+          link.href = `tg://resolve?domain=${bot.toLowerCase()}`;
           link.onclick = function (e) {
             e.preventDefault();
-            return openTelegramApp(e, bot, 'search');
+            return openTelegramApp(e, bot);
           };
         }
       }
