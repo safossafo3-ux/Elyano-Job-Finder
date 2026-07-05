@@ -142,7 +142,47 @@ CREATE TABLE IF NOT EXISTS user_settings (
     email TEXT,
     min_salary TEXT,
     max_commute_km INTEGER,
+    resume_path TEXT,
+    email_digest INTEGER DEFAULT 0,
     FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+-- Phase 3 tables
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,           -- login | favorite_add | favorite_remove | application_* | saved_search_* | scan_* | settings_update
+    entity_type TEXT,               -- job | saved_search | application | settings
+    entity_id INTEGER,
+    details TEXT,                   -- JSON blob
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
+
+CREATE TABLE IF NOT EXISTS email_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    to_email TEXT NOT NULL,
+    subject TEXT,
+    body_preview TEXT,
+    status TEXT NOT NULL,           -- sent | failed
+    error TEXT,
+    sent_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS job_alert_digest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    saved_search_id INTEGER,
+    new_jobs_count INTEGER DEFAULT 0,
+    sent_at TEXT NOT NULL,
+    channel TEXT NOT NULL,           -- telegram | email
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(saved_search_id) REFERENCES saved_searches(id)
 );
 """
 
@@ -152,6 +192,11 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id)",
     "CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_id)",
+    # Phase 3 — add new columns to existing tables (idempotent: wrapped in try/except)
+    "ALTER TABLE user_settings ADD COLUMN resume_path TEXT",
+    "ALTER TABLE user_settings ADD COLUMN email_digest INTEGER DEFAULT 0",
+    "ALTER TABLE saved_searches ADD COLUMN schedule_frequency TEXT DEFAULT 'off'",  # off | daily | weekly
+    "ALTER TABLE saved_searches ADD COLUMN last_notified_at TEXT",
 ]
 
 
@@ -173,6 +218,7 @@ def init_db():
             try:
                 conn.execute(stmt)
             except sqlite3.OperationalError:
+                # Likely "duplicate column name" — idempotent, ignore.
                 pass
 
 
@@ -643,34 +689,38 @@ def get_user_settings(user_id: int) -> Dict[str, Any]:
                 "email": "",
                 "min_salary": "",
                 "max_commute_km": None,
+                "resume_path": "",
+                "email_digest": False,
             }
         d = dict(row)
         d["notify_telegram"] = bool(d.get("notify_telegram"))
         d["notify_email"] = bool(d.get("notify_email"))
+        d["email_digest"] = bool(d.get("email_digest"))
+        d.setdefault("resume_path", "")
         return d
 
 
 def update_user_settings(user_id: int, **kwargs):
-    allowed = {"notify_telegram", "notify_email", "email", "min_salary", "max_commute_km"}
+    allowed = {"notify_telegram", "notify_email", "email", "min_salary",
+               "max_commute_km", "resume_path", "email_digest"}
     # Filter & normalize
     cleaned = {}
     for k, v in kwargs.items():
         if k not in allowed:
             continue
-        if k in ("notify_telegram", "notify_email"):
+        if k in ("notify_telegram", "notify_email", "email_digest"):
             v = 1 if v else 0
         if k == "max_commute_km" and v == "":
             v = None
         cleaned[k] = v
     if not cleaned:
         return
-    now = datetime.utcnow().isoformat()
     with get_conn() as conn:
-        # First, ensure the row exists with defaults
+        # First, ensure the row exists with defaults (incl. Phase 3 cols)
         conn.execute(
             """INSERT OR IGNORE INTO user_settings
-               (user_id, notify_telegram, notify_email, email, min_salary, max_commute_km)
-               VALUES (?, 1, 0, '', '', NULL)""",
+               (user_id, notify_telegram, notify_email, email, min_salary, max_commute_km, resume_path, email_digest)
+               VALUES (?, 1, 0, '', '', NULL, NULL, 0)""",
             (user_id,)
         )
         # Then update only the fields provided
@@ -688,3 +738,212 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Activity log, email log, statistics, scheduled searches
+# ---------------------------------------------------------------------------
+
+def log_activity(user_id: int, action: str, entity_type: str = "",
+                 entity_id: Optional[int] = None, details: Optional[Dict[str, Any]] = None):
+    """Record a user action. Non-fatal: errors are swallowed."""
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO activity_log (user_id, action, entity_type, entity_id, details, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, action, entity_type, entity_id or None,
+                 json.dumps(details) if details else None,
+                 datetime.utcnow().isoformat())
+            )
+    except Exception:
+        pass
+
+
+def list_activity(user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM activity_log WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def log_email(user_id: Optional[int], to_email: str, subject: str,
+              body_preview: str, status: str, error: str = ""):
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO email_log (user_id, to_email, subject, body_preview, status, error, sent_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, to_email, subject, body_preview[:300], status, error,
+                 datetime.utcnow().isoformat())
+            )
+    except Exception:
+        pass
+
+
+def list_email_log(user_id: int, limit: int = 30) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM email_log WHERE user_id=? ORDER BY sent_at DESC LIMIT ?",
+            (user_id, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# Statistics --------------------------------------------------------------
+
+def user_stats(user_id: int) -> Dict[str, Any]:
+    """Per-user dashboard stats."""
+    with get_conn() as conn:
+        favorites = conn.execute(
+            "SELECT COUNT(*) FROM favorites WHERE user_id=?", (user_id,)
+        ).fetchone()[0]
+        applications = conn.execute(
+            "SELECT COUNT(*) FROM applications WHERE user_id=?", (user_id,)
+        ).fetchone()[0]
+        saved_searches = conn.execute(
+            "SELECT COUNT(*) FROM saved_searches WHERE user_id=?", (user_id,)
+        ).fetchone()[0]
+        # Application breakdown by status
+        status_rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM applications WHERE user_id=? GROUP BY status",
+            (user_id,)
+        ).fetchall()
+        by_status = {r["status"]: r["n"] for r in status_rows}
+        # Last login
+        u = conn.execute("SELECT last_login_at, created_at FROM users WHERE id=?", (user_id,)).fetchone()
+        return {
+            "favorites": favorites,
+            "applications": applications,
+            "saved_searches": saved_searches,
+            "applications_by_status": {
+                "applied": by_status.get("applied", 0),
+                "interview": by_status.get("interview", 0),
+                "offer": by_status.get("offer", 0),
+                "rejected": by_status.get("rejected", 0),
+            },
+            "last_login_at": dict(u).get("last_login_at") if u else None,
+            "member_since": dict(u).get("created_at") if u else None,
+        }
+
+
+def global_stats() -> Dict[str, Any]:
+    """Admin stats across all users."""
+    with get_conn() as conn:
+        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        total_jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        eligible_jobs = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE rejects_foreigners=0 AND ad_summary_en != '' AND ad_summary_en != '(analysis failed)'"
+        ).fetchone()[0]
+        total_favorites = conn.execute("SELECT COUNT(*) FROM favorites").fetchone()[0]
+        total_applications = conn.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
+        total_saved_searches = conn.execute("SELECT COUNT(*) FROM saved_searches").fetchone()[0]
+        # Jobs by country (top 10)
+        by_country = conn.execute(
+            "SELECT country_code, country_name, COUNT(*) AS n FROM jobs GROUP BY country_code ORDER BY n DESC LIMIT 10"
+        ).fetchall()
+        by_category = conn.execute(
+            "SELECT category, COUNT(*) AS n FROM jobs GROUP BY category ORDER BY n DESC"
+        ).fetchall()
+        # Recent scans
+        recent_scans = conn.execute(
+            "SELECT * FROM scan_log ORDER BY started_at DESC LIMIT 10"
+        ).fetchall()
+        return {
+            "total_users": total_users,
+            "total_jobs": total_jobs,
+            "eligible_jobs": eligible_jobs,
+            "total_favorites": total_favorites,
+            "total_applications": total_applications,
+            "total_saved_searches": total_saved_searches,
+            "jobs_by_country": [dict(r) for r in by_country],
+            "jobs_by_category": [dict(r) for r in by_category],
+            "recent_scans": [dict(r) for r in recent_scans],
+        }
+
+
+# Saved search scheduling -------------------------------------------------
+
+VALID_SCHEDULE_FREQUENCIES = {"off", "daily", "weekly"}
+
+
+def set_saved_search_schedule(user_id: int, search_id: int, frequency: str) -> bool:
+    if frequency not in VALID_SCHEDULE_FREQUENCIES:
+        raise ValueError(f"Invalid frequency: {frequency}")
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE saved_searches SET schedule_frequency=? WHERE id=? AND user_id=?",
+            (frequency, search_id, user_id)
+        )
+        return cur.rowcount > 0
+
+
+def list_scheduled_searches(frequency: str) -> List[Dict[str, Any]]:
+    """Get all saved searches with a given schedule frequency, across all users."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT s.*, u.telegram_chat_id, u.username, u.id AS user_id
+               FROM saved_searches s
+               JOIN users u ON s.user_id = u.id
+               WHERE s.schedule_frequency=?""",
+            (frequency,)
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["countries"] = json.loads(d.get("countries") or "[]")
+            d["categories"] = json.loads(d.get("categories") or "[]")
+            out.append(d)
+        return out
+
+
+def touch_saved_search_notified(search_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE saved_searches SET last_notified_at=? WHERE id=?",
+            (datetime.utcnow().isoformat(), search_id)
+        )
+
+
+def log_digest(user_id: int, saved_search_id: Optional[int], new_jobs_count: int, channel: str):
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO job_alert_digest (user_id, saved_search_id, new_jobs_count, sent_at, channel)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, saved_search_id, new_jobs_count,
+                 datetime.utcnow().isoformat(), channel)
+            )
+    except Exception:
+        pass
+
+
+# Resume path helper ------------------------------------------------------
+
+def set_resume_path(user_id: int, path: str):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        # Ensure row exists
+        conn.execute(
+            """INSERT OR IGNORE INTO user_settings
+               (user_id, notify_telegram, notify_email, email, min_salary, max_commute_km, resume_path, email_digest)
+               VALUES (?, 1, 0, '', '', NULL, ?, 0)""",
+            (user_id, path)
+        )
+        conn.execute(
+            "UPDATE user_settings SET resume_path=? WHERE user_id=?",
+            (path, user_id)
+        )
+
+
+# Scan log list helper ----------------------------------------------------
+
+def list_scan_log(limit: int = 20) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scan_log ORDER BY started_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]

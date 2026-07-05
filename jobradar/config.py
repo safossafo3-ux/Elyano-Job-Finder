@@ -408,5 +408,30 @@ class Settings:
 
     SESSION_SECRET: str = os.getenv("SESSION_SECRET", "change-me-in-production")
 
+    # ----- Phase 3: Email (SMTP) -----
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM_NAME: str = os.getenv("SMTP_FROM_NAME", "JobRadar")
+    SMTP_USE_SSL: bool = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
+
+    # ----- Phase 3: Admin -----
+    # Comma-separated list of Telegram usernames that get admin privileges.
+    ADMIN_TELEGRAM_USERNAMES: str = os.getenv("ADMIN_TELEGRAM_USERNAMES", "")
+
+    # ----- Phase 3: Resume uploads -----
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", os.path.join(_project_root(), "upload", "resumes"))
+    MAX_RESUME_SIZE_BYTES: int = int(os.getenv("MAX_RESUME_SIZE_BYTES", str(5 * 1024 * 1024)))  # 5 MB
+
+
+def is_admin(username: str) -> bool:
+    """Check whether a Telegram username is in the admin list."""
+    if not username or not settings.ADMIN_TELEGRAM_USERNAMES:
+        return False
+    clean = username.strip().lstrip("@").lower()
+    admins = [a.strip().lstrip("@").lower() for a in settings.ADMIN_TELEGRAM_USERNAMES.split(",") if a.strip()]
+    return clean in admins
+
 
 settings = Settings()

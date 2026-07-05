@@ -1,16 +1,17 @@
 """
 Telegram bot for JobRadar.
 
-PHASE 2 FLOW (simple username login):
-  1. User opens dashboard → clicks "Login with Telegram"
-  2. Modal says: "Send /start to @YourBot, then enter your Telegram username here"
-  3. User sends /start to the bot
-  4. Bot immediately registers them (stores telegram_user_id, chat_id, username)
-     and replies: "You're registered! Now go back to the dashboard and enter
-     your Telegram username to log in."
-  5. User enters their username on the dashboard → instant login.
+LOGIN FLOW (Phase 3 — username + 6-digit code via bot):
+  1. User opens dashboard → "Login with Telegram" → enters their Telegram username
+  2. Dashboard calls POST /api/auth/request-code with {username}
+  3. Backend looks up the user (must have previously sent /start to the bot),
+     generates a 6-digit code, and SENDS IT TO THE USER'S TELEGRAM CHAT via the bot.
+  4. User enters the code on the dashboard
+  5. Dashboard calls POST /api/auth/verify-code with {code} → session created → logged in
 
-The old 6-digit code flow is gone. Username is the only credential.
+Bot /start command:
+  - Registers/refreshes the user's telegram_user_id + chat_id + username
+  - Tells them to go back to the dashboard and log in
 """
 
 import asyncio
@@ -20,7 +21,10 @@ from typing import Optional
 import httpx
 
 from .config import settings
-from .database import register_telegram_user, get_user_by_telegram_id
+from .database import (
+    register_telegram_user, get_user_by_telegram_id,
+    get_user_by_username, create_login_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,15 +153,11 @@ async def handle_update(update: dict) -> Optional[dict]:
         return None
 
     if text.startswith("/start"):
-        # Register the user IMMEDIATELY. They can now log in by username.
+        # Register the user IMMEDIATELY. They can now log in by username + code.
         existing = get_user_by_telegram_id(tg_user_id)
         register_telegram_user(tg_user_id, chat_id, username, first_name)
 
-        bot_link = ""
-        if settings.WEBAPP_PUBLIC_URL:
-            bot_link = settings.WEBAPP_PUBLIC_URL
-        else:
-            bot_link = "(the dashboard URL)"
+        bot_link = settings.WEBAPP_PUBLIC_URL or "(the dashboard URL)"
 
         if not username:
             await send_text(chat_id,
@@ -176,9 +176,10 @@ async def handle_update(update: dict) -> Optional[dict]:
         await send_text(chat_id,
             f"✅ <b>You're registered, {first_name or display_name}!</b>\n\n"
             f"Your Telegram username <code>@{username}</code> is now your JobRadar login.\n\n"
-            f"👉 Go to the dashboard and enter <code>{username}</code> to sign in.\n"
+            f"👉 Go to the dashboard, enter <code>{username}</code>, "
+            f"and I'll send a 6-digit login code right here.\n"
             f"🌐 Dashboard: {bot_link}\n\n"
-            f"I'll send you job alerts here automatically once a scan finds matches."
+            f"I'll also send you job alerts here automatically once a scan finds matches."
         )
         return {"status": "registered", "existing_user": bool(existing)}
 
@@ -189,14 +190,59 @@ async def handle_update(update: dict) -> Optional[dict]:
             "/start — Register / refresh your account\n"
             "/help — Show this help\n\n"
             "<b>How to log in:</b>\n"
-            "1. Send me /start\n"
+            "1. Send me /start (you just did!)\n"
             "2. Open the dashboard\n"
-            "3. Enter your Telegram username\n\n"
+            "3. Enter your Telegram username\n"
+            "4. I'll send you a 6-digit code here\n"
+            "5. Enter the code on the dashboard to sign in\n\n"
             "Once logged in, you'll receive job alerts here automatically."
         )
         return {"status": "help_sent"}
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Login code dispatch — called from the webapp when user requests a code
+# ---------------------------------------------------------------------------
+
+async def send_login_code_to_user(username: str) -> dict:
+    """Generate a 6-digit login code and send it to the user's Telegram chat.
+
+    Returns: {"ok": bool, "error": str?}
+    """
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return {"ok": False, "error": "Bot token not configured on the server."}
+
+    user = get_user_by_username(username)
+    if not user:
+        return {"ok": False, "error": f"No account found for '@{username}'. Send /start to the bot first."}
+
+    chat_id = int(user.get("telegram_chat_id") or 0)
+    if not chat_id:
+        return {"ok": False, "error": "Your account has no chat_id. Send /start to the bot again."}
+
+    # Create the 6-digit code (also expires old ones)
+    code = create_login_code(
+        telegram_user_id=int(user["telegram_user_id"]),
+        telegram_chat_id=chat_id,
+        username=user.get("username") or "",
+        first_name=user.get("first_name") or "",
+    )
+
+    display = f"@{user.get('username')}" if user.get("username") else (user.get("first_name") or "there")
+    msg = (
+        f"🔐 <b>JobRadar Login Code</b>\n\n"
+        f"Hi {display}, here is your one-time login code:\n\n"
+        f"<code>{code}</code>\n\n"
+        f"⏱️ It expires in 10 minutes.\n"
+        f"Enter it on the dashboard to sign in.\n\n"
+        f"If you didn't request this code, just ignore this message."
+    )
+    sent = await send_text(chat_id, msg)
+    if not sent:
+        return {"ok": False, "error": "Failed to send code via Telegram. Try again in a moment."}
+    return {"ok": True}
 
 
 async def poll_updates():

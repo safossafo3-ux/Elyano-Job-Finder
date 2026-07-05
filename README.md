@@ -48,18 +48,35 @@ cp .env.example .env
 python run.py
 ```
 
-Open http://localhost:8000 → click **Login with Telegram** → send `/start` to your bot → enter the 6-digit code.
+Open http://localhost:8000 → click **Login with Telegram** → send `/start` to your bot → enter your Telegram username → bot sends a 6-digit code → enter code → signed in.
 
-## How user registration works
+## How user registration works (Phase 3)
 
 1. User opens dashboard → clicks **Login with Telegram**
-2. Modal shows link to your bot + a code input field
+2. Modal shows link to your bot + a username input field
 3. User clicks the link → Telegram opens → user sends `/start`
-4. Bot replies with a 6-digit code (valid 10 minutes)
-5. User enters the code on the dashboard → session cookie is set (30 days)
-6. Each user's scans + notifications are tracked per-user in the DB
+4. Bot replies: "You're registered! Go back to the dashboard and enter your username."
+5. User enters their Telegram username on the dashboard
+6. **Bot sends them a 6-digit code in Telegram** (valid 10 minutes)
+7. User enters the code on the dashboard → session cookie is set (30 days) → logged in
 
 Multiple users can register; each gets notifications only for scans they trigger. Scheduled scans (8 AM + 8 PM) notify all registered users.
+
+## Phase 3 features
+
+- 🔐 **2-step login** — username → bot sends 6-digit code → enter code → signed in
+- 💾 **Saved searches with scheduling** — off / daily / weekly (digests sent at 09:00 your timezone)
+- ⭐ **Favorites** — star any job for later
+- 📝 **Application tracking** — applied → interview → offer / rejected (kanban-style)
+- 📊 **Stats dashboard** — favorites, applications by status, saved searches
+- 📜 **Activity log** — every action (login, favorite, scan, settings update, etc.)
+- ⚙️ **Settings** — toggle Telegram/email alerts, set email, minimum salary, max commute, daily email digest
+- 📄 **Resume upload** — PDF/DOC/DOCX, up to 5 MB, downloadable from your dashboard
+- ✉️ **Email notifications** — SMTP integration (Gmail, SendGrid, etc.) for alerts + digests
+- ⬇️ **CSV export** — export filtered jobs to CSV
+- 🛡️ **Admin panel** — admin users see global stats, recent scans, all registered users
+- 🛰️ **Rate limiting** — per-user 60/min, per-IP 15/min (configurable via env vars)
+- 🤖 **Daily/weekly digests** — for saved searches with scheduling enabled
 
 ## Deploy to Railway
 

@@ -21,6 +21,10 @@ RUN playwright install chromium
 # Copy app
 COPY . .
 
+# Phase 3: create upload + screenshots directories with proper permissions
+RUN mkdir -p /app/upload/resumes /app/download/screenshots && \
+    chmod -R 777 /app/upload /app/download
+
 # Railway injects PORT at runtime; we don't hardcode it here.
 # Locally, config.py defaults to 8000 if neither PORT nor WEBAPP_PORT is set.
 

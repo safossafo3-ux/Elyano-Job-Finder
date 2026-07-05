@@ -1,21 +1,40 @@
 """
-FastAPI dashboard + API — Phase 2 with username login, saved searches,
-favorites, and application tracking.
+FastAPI dashboard + API — Phase 3.
+
+Login flow:
+  POST /api/auth/request-code  {username}     → bot sends 6-digit code to user's Telegram
+  POST /api/auth/verify-code   {code}         → validates, sets session cookie, returns user
+
+Phase 3 features:
+  - Saved searches (with scheduling: off/daily/weekly)
+  - Favorites
+  - Application tracking (kanban-style)
+  - User settings (notify_telegram, notify_email, email, resume_path, email_digest)
+  - Resume upload (PDF/DOC, stored locally)
+  - Activity log
+  - Email log
+  - Statistics (per-user + global admin)
+  - CSV export of jobs
+  - Admin panel (admin usernames from env)
+  - Rate limiting (per-user + per-IP)
 """
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import os
+import shutil
 from typing import Optional, List
 
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Response, Cookie
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Response, Cookie, UploadFile, File, Depends
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .config import settings, COUNTRIES, CATEGORIES, REGIONS, _project_root, countries_by_region, get_keyword
+from .config import settings, COUNTRIES, CATEGORIES, REGIONS, _project_root, countries_by_region, get_keyword, is_admin
 from .database import (
     init_db, list_jobs, get_job, set_job_status, count_jobs,
     get_user_by_session, list_users,
@@ -26,20 +45,33 @@ from .database import (
     add_favorite, remove_favorite, list_favorites, is_favorite,
     upsert_application, remove_application, list_applications, VALID_APP_STATUSES,
     get_user_settings, update_user_settings,
+    # Phase 3
+    consume_login_code,
+    log_activity, list_activity,
+    list_email_log,
+    user_stats, global_stats,
+    set_saved_search_schedule, list_scheduled_searches, touch_saved_search_notified,
+    VALID_SCHEDULE_FREQUENCIES,
+    set_resume_path, list_scan_log,
 )
-from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline
-from .telegram_bot import send_text
+from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline, run_scheduled_searches
+from .telegram_bot import send_text, send_login_code_to_user
+from .rate_limit import RateLimitMiddleware
+from .email_notify import send_email, build_job_alert_html
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = _project_root()
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
-app = FastAPI(title="JobRadar Global", version="2.1.0")
+app = FastAPI(title="JobRadar Global", version="3.0.0")
 
 _static_dir = os.path.join(BASE_DIR, "static")
 os.makedirs(_static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+# Phase 3: rate limit middleware
+app.add_middleware(RateLimitMiddleware)
 
 
 @app.on_event("startup")
@@ -71,7 +103,7 @@ def _set_session_cookie(response: Response, token: str):
         httponly=True,
         max_age=60*60*24*30,  # 30 days
         samesite="lax",
-        secure=False,  # set True if behind HTTPS in production (Railway terminates TLS, so False is fine)
+        secure=False,  # Railway terminates TLS — fine
     )
 
 
@@ -93,6 +125,7 @@ async def dashboard(request: Request):
             "categories": CATEGORIES,
             "stats": stats,
             "user": user,
+            "is_admin": bool(user and is_admin(user.get("username") or "")),
             "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME,
             "webapp_public_url": settings.WEBAPP_PUBLIC_URL,
         },
@@ -100,40 +133,64 @@ async def dashboard(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Auth API — username-based login
+# Auth API — username + 6-digit code via Telegram bot
 # ---------------------------------------------------------------------------
 
-class LoginRequest(BaseModel):
+class RequestCodeRequest(BaseModel):
     username: str
 
 
-@app.post("/api/auth/login")
-async def api_login_username(req: LoginRequest, response: Response):
-    """Log in with a Telegram username (no codes, no bots-in-the-loop).
-    The user must have sent /start to the bot at least once so we know
-    their telegram_user_id and chat_id."""
+class VerifyCodeRequest(BaseModel):
+    code: str
+
+
+@app.post("/api/auth/request-code")
+async def api_request_code(req: RequestCodeRequest):
+    """Step 1: user enters their Telegram username → bot sends a 6-digit code
+    to that user's Telegram chat."""
     username = (req.username or "").strip().lstrip("@")
     if not username:
         raise HTTPException(400, "Username is required")
-    user = get_user_by_username(username)
-    if not user:
-        raise HTTPException(
-            404,
-            f"No account found for '@{username}'. "
-            f"Send /start to @{settings.TELEGRAM_BOT_USERNAME or 'our bot'} on Telegram first, "
-            f"then come back and enter your username."
-        )
-    token = create_session_for_user(user["id"])
-    _set_session_cookie(response, token)
+    result = await send_login_code_to_user(username)
+    if not result.get("ok"):
+        # Don't leak whether the username exists — return a generic message but include the bot hint
+        msg = result.get("error") or "Failed to send code."
+        raise HTTPException(404, msg)
     return {
         "ok": True,
-        "username": user.get("username"),
-        "first_name": user.get("first_name"),
+        "message": f"Code sent to your Telegram chat (@{settings.TELEGRAM_BOT_USERNAME or 'our bot'}).",
+        "username": username,
+    }
+
+
+@app.post("/api/auth/verify-code")
+async def api_verify_code(req: VerifyCodeRequest, response: Response):
+    """Step 2: user enters the code → validate and create a session."""
+    code = (req.code or "").strip()
+    if not code:
+        raise HTTPException(400, "Code is required")
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, "Code must be 6 digits.")
+    user_info = consume_login_code(code)
+    if not user_info:
+        raise HTTPException(401, "Invalid or expired code. Please request a new one.")
+    _set_session_cookie(response, user_info["session_token"])
+    # Log the login
+    log_activity(user_info["user_id"], "login", entity_type="auth",
+                 details={"username": user_info.get("username")})
+    return {
+        "ok": True,
+        "username": user_info.get("username"),
+        "first_name": user_info.get("first_name"),
+        "is_admin": is_admin(user_info.get("username") or ""),
     }
 
 
 @app.post("/api/auth/logout")
-async def api_logout(response: Response):
+async def api_logout(request: Request, response: Response):
+    user = await get_current_user(request)
+    if user:
+        log_activity(user["id"], "logout")
     response.delete_cookie("session")
     return {"ok": True}
 
@@ -149,6 +206,7 @@ async def api_me(request: Request):
         "username": user.get("username"),
         "first_name": user.get("first_name"),
         "telegram_chat_id": user.get("telegram_chat_id"),
+        "is_admin": is_admin(user.get("username") or ""),
     }
 
 
@@ -201,6 +259,10 @@ async def api_scan_now(background_tasks: BackgroundTasks,
         categories = [c.strip().lower() for c in category.split(",") if c.strip()]
         categories = [c for c in categories if c in CATEGORIES] or None
 
+    if user:
+        log_activity(user["id"], "scan_now",
+                     details={"countries": countries, "categories": categories})
+
     background_tasks.add_task(run_scan_and_pipeline, countries, categories, user_id)
     return {
         "status": "scan_started",
@@ -250,7 +312,7 @@ async def api_stats():
 @app.get("/health")
 async def health():
     """Lightweight healthcheck — no DB access. Railway hits this every few seconds."""
-    return {"status": "ok"}
+    return {"status": "ok", "version": "3.0.0"}
 
 
 @app.get("/api/diagnostics")
@@ -276,6 +338,8 @@ async def api_diagnostics():
         "users_registered": len(list_users()),
         "telegram_configured": bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID),
         "gemini_configured": bool(settings.GEMINI_API_KEY),
+        "smtp_configured": bool(settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD),
+        "admin_usernames": settings.ADMIN_TELEGRAM_USERNAMES,
         "ready": bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID and settings.GEMINI_API_KEY),
     }
 
@@ -293,15 +357,17 @@ async def job_screenshot(job_id: int):
 
 @app.get("/api/users")
 async def api_users(request: Request):
-    """List registered users (admin only — for now, anyone logged in can see)."""
+    """List registered users — admin only."""
     user = await get_current_user(request)
     if not user:
         raise HTTPException(401, "Not authenticated")
+    if not is_admin(user.get("username") or ""):
+        raise HTTPException(403, "Admin only")
     return {"users": list_users()}
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: Saved Searches
+# Saved Searches (Phase 2 + Phase 3 scheduling)
 # ---------------------------------------------------------------------------
 
 class SaveSearchRequest(BaseModel):
@@ -332,6 +398,8 @@ async def api_create_saved_search(req: SaveSearchRequest, request: Request):
         [c.lower() for c in req.categories if c.lower() in CATEGORIES],
         req.keywords.strip(),
     )
+    log_activity(user["id"], "saved_search_create", entity_type="saved_search",
+                 entity_id=ss["id"], details={"name": req.name.strip()})
     return {"ok": True, "saved_search": ss}
 
 
@@ -343,6 +411,7 @@ async def api_delete_saved_search(search_id: int, request: Request):
     ok = delete_saved_search(user["id"], search_id)
     if not ok:
         raise HTTPException(404, "Not found")
+    log_activity(user["id"], "saved_search_delete", entity_type="saved_search", entity_id=search_id)
     return {"ok": True}
 
 
@@ -358,12 +427,34 @@ async def api_run_saved_search(search_id: int, request: Request, background_task
     countries = target["countries"] or None
     categories = target["categories"] or None
     touch_saved_search(search_id)
+    log_activity(user["id"], "saved_search_run", entity_type="saved_search", entity_id=search_id)
     background_tasks.add_task(run_scan_and_pipeline, countries, categories, user["id"])
     return {"ok": True, "status": "scan_started", "countries": countries, "categories": categories}
 
 
+# Phase 3: schedule a saved search (off/daily/weekly)
+class ScheduleRequest(BaseModel):
+    frequency: str  # off | daily | weekly
+
+
+@app.put("/api/saved-searches/{search_id}/schedule")
+async def api_set_schedule(search_id: int, req: ScheduleRequest, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if req.frequency not in VALID_SCHEDULE_FREQUENCIES:
+        raise HTTPException(400, f"Invalid frequency. Must be one of: {VALID_SCHEDULE_FREQUENCIES}")
+    ok = set_saved_search_schedule(user["id"], search_id, req.frequency)
+    if not ok:
+        raise HTTPException(404, "Saved search not found")
+    log_activity(user["id"], "saved_search_schedule",
+                 entity_type="saved_search", entity_id=search_id,
+                 details={"frequency": req.frequency})
+    return {"ok": True, "frequency": req.frequency}
+
+
 # ---------------------------------------------------------------------------
-# Phase 2: Favorites
+# Favorites
 # ---------------------------------------------------------------------------
 
 @app.get("/api/favorites")
@@ -382,6 +473,7 @@ async def api_add_favorite(job_id: int, request: Request):
     if not get_job(job_id):
         raise HTTPException(404, "Job not found")
     add_favorite(user["id"], job_id)
+    log_activity(user["id"], "favorite_add", entity_type="job", entity_id=job_id)
     return {"ok": True, "favorited": True}
 
 
@@ -391,11 +483,12 @@ async def api_remove_favorite(job_id: int, request: Request):
     if not user:
         raise HTTPException(401, "Not authenticated")
     remove_favorite(user["id"], job_id)
+    log_activity(user["id"], "favorite_remove", entity_type="job", entity_id=job_id)
     return {"ok": True, "favorited": False}
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: Application Tracking
+# Application Tracking
 # ---------------------------------------------------------------------------
 
 class ApplicationRequest(BaseModel):
@@ -421,6 +514,8 @@ async def api_upsert_application(job_id: int, req: ApplicationRequest, request: 
     if req.status not in VALID_APP_STATUSES:
         raise HTTPException(400, f"Invalid status. Must be one of: {VALID_APP_STATUSES}")
     upsert_application(user["id"], job_id, req.status, req.notes.strip())
+    log_activity(user["id"], f"application_{req.status}",
+                 entity_type="job", entity_id=job_id)
     return {"ok": True, "job_id": job_id, "status": req.status}
 
 
@@ -430,11 +525,12 @@ async def api_remove_application(job_id: int, request: Request):
     if not user:
         raise HTTPException(401, "Not authenticated")
     remove_application(user["id"], job_id)
+    log_activity(user["id"], "application_remove", entity_type="job", entity_id=job_id)
     return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: User Settings
+# User Settings + Resume upload
 # ---------------------------------------------------------------------------
 
 @app.get("/api/user/settings")
@@ -451,7 +547,8 @@ async def api_update_settings(request: Request,
                               notify_email: Optional[bool] = None,
                               email: Optional[str] = None,
                               min_salary: Optional[str] = None,
-                              max_commute_km: Optional[int] = None):
+                              max_commute_km: Optional[int] = None,
+                              email_digest: Optional[bool] = None):
     user = await get_current_user(request)
     if not user:
         raise HTTPException(401, "Not authenticated")
@@ -461,5 +558,192 @@ async def api_update_settings(request: Request,
     if email is not None: kwargs["email"] = email
     if min_salary is not None: kwargs["min_salary"] = min_salary
     if max_commute_km is not None: kwargs["max_commute_km"] = max_commute_km
+    # email_digest lives in user_settings — pass through
+    if email_digest is not None: kwargs["email_digest"] = email_digest
     update_user_settings(user["id"], **kwargs)
+    log_activity(user["id"], "settings_update", entity_type="settings", details=kwargs)
     return {"ok": True, "settings": get_user_settings(user["id"])}
+
+
+@app.post("/api/user/resume")
+async def api_upload_resume(request: Request, file: UploadFile = File(...)):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    # Validate file type
+    allowed = {".pdf", ".doc", ".docx"}
+    filename = file.filename or "resume.bin"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in allowed:
+        raise HTTPException(400, f"Only PDF, DOC, DOCX allowed. Got: {ext or '(none)'}")
+    # Read content with size cap
+    content = await file.read()
+    if len(content) > settings.MAX_RESUME_SIZE_BYTES:
+        raise HTTPException(413, f"Resume too large. Max {settings.MAX_RESUME_SIZE_BYTES // (1024*1024)} MB.")
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    safe_name = f"user_{user['id']}_resume{ext}"
+    target_path = os.path.join(settings.UPLOAD_DIR, safe_name)
+    with open(target_path, "wb") as f:
+        f.write(content)
+    set_resume_path(user["id"], target_path)
+    log_activity(user["id"], "resume_upload", entity_type="settings",
+                 details={"filename": filename, "size_bytes": len(content)})
+    return {"ok": True, "filename": safe_name, "size_bytes": len(content)}
+
+
+@app.get("/api/user/resume")
+async def api_download_resume(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    s = get_user_settings(user["id"])
+    path = s.get("resume_path") or ""
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "No resume uploaded yet.")
+    return FileResponse(path, filename=os.path.basename(path))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Activity log, stats, CSV export
+# ---------------------------------------------------------------------------
+
+@app.get("/api/activity")
+async def api_activity(request: Request, limit: int = 50):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return {"activity": list_activity(user["id"], limit=min(limit, 200))}
+
+
+@app.get("/api/email-log")
+async def api_email_log(request: Request, limit: int = 30):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return {"emails": list_email_log(user["id"], limit=min(limit, 100))}
+
+
+@app.get("/api/user/stats")
+async def api_user_stats(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return user_stats(user["id"])
+
+
+@app.get("/api/jobs/export.csv")
+async def api_export_jobs_csv(request: Request,
+                              country: Optional[str] = None,
+                              category: Optional[str] = None,
+                              status: Optional[str] = None,
+                              limit: int = 1000):
+    """Export filtered jobs as a CSV file. Auth required."""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    country_codes = None
+    if country:
+        country_codes = [c.strip().upper() for c in country.split(",") if c.strip()]
+    category_keys = None
+    if category:
+        category_keys = [c.strip().lower() for c in category.split(",") if c.strip()]
+    jobs = list_jobs(country_codes=country_codes, categories=category_keys,
+                     status=status, limit=min(limit, 5000))
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "id", "title", "company", "country_code", "country_name",
+        "category", "portal_name", "phone_normalized", "ad_summary_en",
+        "rejects_foreigners", "has_phone", "posted_at", "discovered_at", "url",
+    ])
+    for j in jobs:
+        writer.writerow([
+            j.get("id"), j.get("title", ""), j.get("company", ""),
+            j.get("country_code", ""), j.get("country_name", ""),
+            j.get("category", ""), j.get("portal_name", ""),
+            j.get("phone_normalized", ""), j.get("ad_summary_en", ""),
+            j.get("rejects_foreigners", 0), j.get("has_phone", 0),
+            j.get("posted_at", ""), j.get("discovered_at", ""),
+            j.get("url", ""),
+        ])
+    log_activity(user["id"], "export_csv",
+                 details={"country": country, "category": category, "rows": len(jobs)})
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=jobradar_jobs.csv"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Admin endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/stats")
+async def api_admin_stats(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if not is_admin(user.get("username") or ""):
+        raise HTTPException(403, "Admin only")
+    return global_stats()
+
+
+@app.get("/api/admin/users")
+async def api_admin_users(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if not is_admin(user.get("username") or ""):
+        raise HTTPException(403, "Admin only")
+    return {"users": list_users()}
+
+
+@app.get("/api/admin/scan-log")
+async def api_admin_scan_log(request: Request, limit: int = 20):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if not is_admin(user.get("username") or ""):
+        raise HTTPException(403, "Admin only")
+    return {"scans": list_scan_log(limit=min(limit, 100))}
+
+
+@app.post("/api/admin/scan-now")
+async def api_admin_scan_now(background_tasks: BackgroundTasks, request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    if not is_admin(user.get("username") or ""):
+        raise HTTPException(403, "Admin only")
+    log_activity(user["id"], "admin_scan_now")
+    background_tasks.add_task(run_scan_and_pipeline, None, None, user["id"])
+    return {"ok": True, "status": "scan_started"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Test email (so users can verify their email config)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/user/test-email")
+async def api_test_email(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    s = get_user_settings(user["id"])
+    to = s.get("email") or ""
+    if not to:
+        raise HTTPException(400, "Set your email in settings first.")
+    html = (
+        "<div style='background:#0a1628;padding:24px;font-family:Inter,Arial,sans-serif;color:#e2e8f0;'>"
+        "<h2 style='color:#22d3ee;'>🛰️ JobRadar — Test Email</h2>"
+        "<p>If you can read this, your email notifications are working correctly.</p>"
+        "<p style='color:#9fb3c8;font-size:13px;'>JobRadar Global</p>"
+        "</div>"
+    )
+    ok = send_email(to, "JobRadar — Test Email", html, user_id=user["id"])
+    if not ok:
+        raise HTTPException(500, "Failed to send email. Check server SMTP config.")
+    return {"ok": True, "to": to}
