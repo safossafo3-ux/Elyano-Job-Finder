@@ -30,6 +30,7 @@ import string
 from typing import List, Dict, Optional, Set, Tuple
 from urllib.parse import quote, quote_plus, urljoin, urlparse
 
+import httpx
 from playwright.async_api import async_playwright, Page, TimeoutError as PWTimeout
 
 from ..config import settings, COUNTRIES, CATEGORIES, _default_screenshots_dir, get_keyword
@@ -54,6 +55,76 @@ def screenshot_path_for(url: str) -> str:
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
     slug = "".join(c if c in string.ascii_letters + string.digits else "_" for c in url)[:120]
     return f"{SCREENSHOTS_DIR}/{slug}.png"
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare / challenge-page detection — returns True if the page title or
+# body matches a known bot-challenge signature. When this returns True, the
+# scraper MUST NOT try to extract job links (the links it finds are false
+# positives like "Find jobs" navigation links from the challenge page).
+# ---------------------------------------------------------------------------
+CHALLENGE_TITLE_KW = [
+    "just a moment", "attention required", "access denied", "are you a robot",
+    "captcha", "verify you are", "403 forbidden", "service unavailable",
+    "enable javascript and cookies", "checking your browser",
+]
+
+
+def is_challenge_page(title: str) -> bool:
+    """Detect Cloudflare/anti-bot challenge pages by title."""
+    t = (title or "").lower().strip()
+    return any(kw in t for kw in CHALLENGE_TITLE_KW)
+
+
+async def is_page_challenged(page: Page) -> bool:
+    """Check the Playwright page's title for challenge signatures."""
+    try:
+        title = await page.title()
+        if is_challenge_page(title):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
+# httpx-based fallback scrapers — these bypass Cloudflare's Playwright
+# fingerprint detection by using a real browser User-Agent + Accept headers
+# and a simple HTTP GET. Many portals (Talent.com, CareerJet, DuckDuckGo,
+# LinkedIn JSON endpoint) serve usable HTML/JSON to plain HTTP clients
+# while blocking Playwright headless browsers.
+# ---------------------------------------------------------------------------
+HTTPX_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+
+async def httpx_get(url: str, timeout: float = 15.0) -> Optional[str]:
+    """Plain HTTP GET via httpx. Returns HTML text or None on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=HTTPX_HEADERS) as c:
+            r = await c.get(url)
+            if r.status_code != 200:
+                return None
+            ct = r.headers.get("content-type", "")
+            if "text" not in ct and "html" not in ct and "json" not in ct:
+                return None
+            return r.text
+    except Exception as e:
+        logger.debug(f"httpx_get failed for {url[:80]}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -219,28 +290,45 @@ async def extract_job_links_jooble(page: Page, base_url: str) -> List[Dict[str, 
 
 
 async def extract_job_links_talent(page: Page, base_url: str) -> List[Dict[str, str]]:
+    """Talent.com — multiple selector families, including the current
+    `a[data-job-id]` + `.job-card__title` layout used in 2024+."""
     return await page.evaluate(
-        """
+        r"""
         () => {
           const out = [];
           const seen = new Set();
-          for (const a of document.querySelectorAll('a[href*="/job/"], a.job-link, .job-card a, h3 a, h2 a')) {
-            const href = a.href;
-            if (!href || seen.has(href)) continue;
-            seen.add(href);
-            const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
-            if (title.length < 3) continue;
-            const card = a.closest('.job-card, li, article, tr');
-            let company = '';
-            let location = '';
-            let summary = '';
-            if (card) {
-              const coEl = card.querySelector('[class*=company], .company, [class*=business]');
-              if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
-              const locEl = card.querySelector('[class*=location], .location');
-              if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+          // Multiple selector strategies — Talent.com has changed layouts several times
+          const sels = [
+            'a[data-job-id]',
+            'a.job-card',
+            '.job-card a',
+            '.job a[href*="/job/"]',
+            'a[href*="/job/"]',
+            'li article a',
+            'h2 a', 'h3 a',
+          ];
+          for (const sel of sels) {
+            for (const a of document.querySelectorAll(sel)) {
+              const href = a.href;
+              if (!href || seen.has(href)) continue;
+              // Skip pagination/category nav
+              if (!href.includes('/job/') && !href.match(/\/j\d+/i)) continue;
+              seen.add(href);
+              const title = (a.innerText || a.textContent || '').trim().slice(0, 200);
+              if (title.length < 3) continue;
+              const card = a.closest('.job-card, article, li, tr, [class*=result]');
+              let company = '';
+              let location = '';
+              let summary = '';
+              if (card) {
+                const coEl = card.querySelector('[class*=company], .company, [class*=business], [class*=employer]');
+                if (coEl) company = (coEl.innerText || '').trim().slice(0,200);
+                const locEl = card.querySelector('[class*=location], .location, [class*=region]');
+                if (locEl) location = (locEl.innerText || '').trim().slice(0,120);
+              }
+              out.push({url: href, title, company, location, summary});
+              if (out.length >= 30) break;
             }
-            out.push({url: href, title, company, location, summary});
             if (out.length >= 30) break;
           }
           return out;
@@ -373,6 +461,249 @@ async def extract_job_links_monster(page: Page, base_url: str) -> List[Dict[str,
         }
         """
     )
+
+
+# ---------------------------------------------------------------------------
+# httpx-based fallback scrapers — for portals that block Playwright but serve
+# usable HTML to plain HTTP clients. These return the same {url, title,
+# company, location, summary} dict shape as the Playwright extractors.
+# ---------------------------------------------------------------------------
+
+import re as _re
+from html import unescape as _unescape
+
+
+def _strip_html(s: str) -> str:
+    """Strip HTML tags and collapse whitespace."""
+    s = _re.sub(r"<[^>]+>", " ", s)
+    s = _unescape(s)
+    return _re.sub(r"\s+", " ", s).strip()
+
+
+def httpx_extract_talent(html: str, base_url: str) -> List[Dict[str, str]]:
+    """Parse Talent.com HTML with regex. Talent.com uses <a data-job-id="..."
+    with the job title as inner text. Returns rich dicts."""
+    out: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    # Match <a ... href=".../job/<id>" ...>title</a>
+    for m in _re.finditer(
+        r'<a[^>]+href="([^"]*?/job/[^"]+)"[^>]*>(.*?)</a>',
+        html, _re.IGNORECASE | _re.DOTALL,
+    ):
+        href = m.group(1)
+        title = _strip_html(m.group(2))[:200]
+        if not title or len(title) < 3:
+            continue
+        if href.startswith("/"):
+            href = urljoin(base_url, href)
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append({"url": href, "title": title, "company": "", "location": "", "summary": ""})
+        if len(out) >= 30:
+            break
+    return out
+
+
+def httpx_extract_careerjet(html: str, base_url: str) -> List[Dict[str, str]]:
+    """Parse CareerJet HTML. Job links contain '/job/' or 'jobdetail'."""
+    out: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for m in _re.finditer(
+        r'<a[^>]+href="([^"]+(?:/job/|jobdetail)[^"]*)"[^>]*>(.*?)</a>',
+        html, _re.IGNORECASE | _re.DOTALL,
+    ):
+        href = m.group(1)
+        title = _strip_html(m.group(2))[:200]
+        if not title or len(title) < 3:
+            continue
+        if href.startswith("/"):
+            href = urljoin(base_url, href)
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append({"url": href, "title": title, "company": "", "location": "", "summary": ""})
+        if len(out) >= 30:
+            break
+    return out
+
+
+def httpx_extract_duckduckgo(html: str, base_url: str) -> List[Dict[str, str]]:
+    """Parse DuckDuckGo HTML search results. DDG serves a simple HTML page
+    at html.duckduckgo.com/html/?q=... that's parseable without JS."""
+    out: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    # DDG HTML results: <a class="result__a" href="...">title</a>
+    # The href is usually a redirect like //duckduckgo.com/l/?uddg=<encoded_url>
+    for m in _re.finditer(
+        r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        html, _re.IGNORECASE | _re.DOTALL,
+    ):
+        href = m.group(1)
+        title = _strip_html(m.group(2))[:200]
+        if not title or len(title) < 3:
+            continue
+        # Decode DDG redirect
+        if "uddg=" in href:
+            try:
+                from urllib.parse import parse_qs, urlparse as _up
+                q = parse_qs(_up(href).query).get("uddg", [""])[0]
+                if q:
+                    href = q
+            except Exception:
+                pass
+        if href.startswith("//"):
+            href = "https:" + href
+        if href.startswith("/"):
+            href = urljoin(base_url, href)
+        # Skip DDG internal links
+        if "duckduckgo.com" in href and "uddg=" not in href:
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append({"url": href, "title": title, "company": "", "location": "", "summary": ""})
+        if len(out) >= 30:
+            break
+    return out
+
+
+# Map portal_type -> httpx fallback extractor
+_HTTPX_EXTRACTORS = {
+    "talent":      httpx_extract_talent,
+    "careerjet":   httpx_extract_careerjet,
+    "duckduckgo":  httpx_extract_duckduckgo,
+}
+
+
+async def httpx_scrape_portal(portal_type: str, search_url: str) -> List[Dict[str, str]]:
+    """Try to scrape a portal with httpx instead of Playwright. Returns a list
+    of job dicts, or an empty list on failure. Used as a fallback when the
+    Playwright scrape returns 0 links (likely because of Cloudflare)."""
+    if portal_type not in _HTTPX_EXTRACTORS:
+        # No httpx extractor for this portal type — try DuckDuckGo-style
+        # generic parsing as a last resort.
+        html = await httpx_get(search_url)
+        if not html:
+            return []
+        # Generic: find all <a href> with job-like keywords in the href
+        out: List[Dict[str, str]] = []
+        seen: Set[str] = set()
+        for m in _re.finditer(
+            r'<a[^>]+href="([^"]+)"[^>]*>([^<]{4,200})</a>',
+            html, _re.IGNORECASE,
+        ):
+            href = m.group(1)
+            title = _strip_html(m.group(2))[:200]
+            if not title or len(title) < 4:
+                continue
+            if not any(kw in href.lower() for kw in ["/job", "/vacanc", "/career", "viewjob", "/ofertas", "/offres", "/stellen"]):
+                continue
+            if href.startswith("/"):
+                href = urljoin(search_url, href)
+            if href in seen:
+                continue
+            seen.add(href)
+            out.append({"url": href, "title": title, "company": "", "location": "", "summary": ""})
+            if len(out) >= 15:
+                break
+        return out
+    html = await httpx_get(search_url)
+    if not html:
+        return []
+    return _HTTPX_EXTRACTORS[portal_type](html, search_url)
+
+
+async def httpx_duckduckgo_jobs(keyword: str, country_name: str) -> List[Dict[str, str]]:
+    """Universal fallback: search DuckDuckGo's HTML endpoint for jobs.
+    Query: '<keyword> jobs in <country> site:indeed.com OR site:linkedin.com OR ...'
+    Returns a list of job dicts pointing to the original portals."""
+    # Build a search query that targets job portals
+    sites = ["indeed.com", "linkedin.com/jobs", "glassdoor.com", "jooble.org",
+             "talent.com", "careerjet.com", "monster.com", "stepstone.de",
+             "bayt.com", "jobstreet.com", "reed.co.uk", "totaljobs.com"]
+    site_filter = " OR ".join(f"site:{s}" for s in sites)
+    query = f"{keyword} jobs in {country_name} ({site_filter})"
+    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    html = await httpx_get(url)
+    if not html:
+        return []
+    return httpx_extract_duckduckgo(html, url)
+
+
+async def httpx_linkedin_guest_jobs(keyword: str, country_name: str, limit: int = 25) -> List[Dict[str, str]]:
+    """LinkedIn guest API — returns pure HTML fragments, no Cloudflare blocking.
+    Endpoint: /jobs-guest/jobs/api/seeMoreJobPostings/search
+    Returns up to 25 jobs per call. Each <li> contains <a href="/jobs/view/...">
+    with the job title, plus company + location in nearby elements."""
+    out: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    # Fetch up to `limit` jobs by paginating (start=0, start=25, start=50, ...)
+    fetched = 0
+    for start in range(0, limit, 25):
+        if fetched >= limit:
+            break
+        url = (
+            "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+            f"?keywords={quote_plus(keyword)}&location={quote_plus(country_name)}&start={start}"
+        )
+        html = await httpx_get(url)
+        if not html:
+            break
+        # Each job is an <li> containing:
+        #   <a href="https://.../jobs/view/...">Title</a>
+        #   <h4 class="base-search-card__subtitle">Company</h4>
+        #   <span class="job-search-card__location">Location</span>
+        # Parse all <li> blocks
+        # Match: <li ...> ... <a href="(URL)">(title)</a> ... <h4 ...>(company)</h4> ... <span ...location...>(loc)</span> ... </li>
+        li_blocks = _re.findall(r"<li[^>]*>(.*?)</li>", html, _re.IGNORECASE | _re.DOTALL)
+        if not li_blocks:
+            break
+        for block in li_blocks:
+            # Extract job view URL
+            m = _re.search(
+                r'<a[^>]+href="(https?://[^"]*/jobs/view/[^"]+)"[^>]*>(.*?)</a>',
+                block, _re.IGNORECASE | _re.DOTALL,
+            )
+            if not m:
+                continue
+            href = m.group(1)
+            title = _strip_html(m.group(2))[:200]
+            if not title or len(title) < 3:
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            # Company (h4.base-search-card__subtitle)
+            co_m = _re.search(
+                r'<h4[^>]*base-search-card__subtitle[^>]*>(.*?)</h4>',
+                block, _re.IGNORECASE | _re.DOTALL,
+            )
+            company = _strip_html(co_m.group(1))[:200] if co_m else ""
+            # Location
+            loc_m = _re.search(
+                r'<span[^>]*job-search-card__location[^>]*>(.*?)</span>',
+                block, _re.IGNORECASE | _re.DOTALL,
+            )
+            location = _strip_html(loc_m.group(1))[:120] if loc_m else ""
+            # Also try to grab a snippet/time
+            time_m = _re.search(
+                r'<time[^>]*datetime="([^"]+)"',
+                block, _re.IGNORECASE,
+            )
+            posted_at = time_m.group(1) if time_m else ""
+            out.append({
+                "url": href, "title": title, "company": company,
+                "location": location, "summary": "", "posted_at": posted_at,
+            })
+            fetched += 1
+            if fetched >= limit:
+                break
+        # If the page returned fewer than 25 <li> blocks, we've exhausted results
+        if len(li_blocks) < 25:
+            break
+        await asyncio.sleep(0.4)  # polite delay
+    return out
 
 
 _PORTAL_EXTRACTORS = {
@@ -600,10 +931,30 @@ async def scrape_one_portal(portal: Portal, country_code: str, category_key: str
     except Exception:
         pass
 
-    raw_links = await extract_job_links(portal.portal_type, list_page, search_url)
+    # --- CLOUDFLARE / CHALLENGE DETECTION ---
+    # If the page is a Cloudflare/anti-bot challenge page, the extractors will
+    # find false-positive links like "Find jobs" navigation. Detect this and
+    # skip straight to the httpx fallback (which uses real browser headers
+    # and bypasses Cloudflare's Playwright fingerprint detection).
+    if await is_page_challenged(list_page):
+        logger.info(f"[{country_code}/{portal.name}] Cloudflare challenge detected — trying httpx fallback")
+        raw_links = await httpx_scrape_portal(portal.portal_type, search_url)
+        if not raw_links:
+            logger.info(f"[{country_code}/{portal.name}] httpx fallback also returned 0 links")
+            return {"found": 0, "new": 0}
+        # Proceed with the links from httpx
+    else:
+        raw_links = await extract_job_links(portal.portal_type, list_page, search_url)
+        if not raw_links:
+            # Some portals embed results inside iframes; try the generic extractor on the whole document
+            raw_links = await extract_job_links_generic(list_page, search_url)
+
+    # --- HTTPX FALLBACK ---
+    # If Playwright returned 0 links (but page wasn't a challenge), the
+    # portal may have changed its DOM or be partially blocking us. Try httpx.
     if not raw_links:
-        # Some portals embed results inside iframes; try the generic extractor on the whole document
-        raw_links = await extract_job_links_generic(list_page, search_url)
+        logger.info(f"[{country_code}/{portal.name}] Playwright returned 0 links — trying httpx fallback")
+        raw_links = await httpx_scrape_portal(portal.portal_type, search_url)
 
     if not raw_links:
         logger.info(f"[{country_code}/{portal.name}] no job links extracted")
@@ -800,6 +1151,107 @@ async def scrape_country_category(country_code: str, category_key: str,
             if totals["found"] >= MAX_PORTALS_PER_COUNTRY * 5:
                 logger.info(f"Hit cap of {totals['found']} jobs for {country_code}/{category_key}, stopping early")
                 break
+
+        # --- LINKEDIN GUEST API UNIVERSAL FALLBACK ---
+        # If ALL portals returned 0 jobs (e.g., all blocked by Cloudflare or
+        # the keyword is rare), fall back to LinkedIn's guest API which
+        # returns pure HTML fragments without Cloudflare blocking. This is
+        # the safety net that guarantees users get at least SOME results.
+        if totals["found"] == 0:
+            logger.info(f"[{country_code}/{category_key}] All portals returned 0 jobs — trying LinkedIn guest API fallback")
+            keyword = get_keyword(category_key, country_code)
+            try:
+                li_links = await httpx_linkedin_guest_jobs(keyword, country.name, limit=25)
+                logger.info(f"[{country_code}/{category_key}] LinkedIn guest API returned {len(li_links)} jobs")
+                found = 0
+                new = 0
+                detail_tasks: List[Tuple[Dict, str]] = []
+                for entry in li_links[:MAX_JOBS_PER_PORTAL]:
+                    url = entry.get("url") or ""
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    if _is_skip_url(url):
+                        continue
+                    title = (entry.get("title") or "").strip()[:200]
+                    if not title or len(title) < 4:
+                        continue
+                    title_lower = title.lower()
+                    if any(kw in title_lower for kw in SKIP_TITLE_KW):
+                        continue
+                    company = (entry.get("company") or "").strip()[:200]
+                    location = (entry.get("location") or "").strip()[:120]
+                    posted_at = entry.get("posted_at") or ""
+                    # Compose ad text from listing data
+                    ad_parts = [f"Title: {title}"]
+                    if company: ad_parts.append(f"Company: {company}")
+                    if location: ad_parts.append(f"Location: {location}")
+                    ad_parts.append(f"Source: LinkedIn jobs feed for '{keyword}' in {country.name}")
+                    ad_text = "\n".join(ad_parts)
+                    job = {
+                        "url": url,
+                        "title": title,
+                        "company": company,
+                        "full_text": ad_text[:6000],
+                        "screenshot_path": "",
+                        "country_code": country_code,
+                        "country_name": country.name,
+                        "category": category_key,
+                        "portal_name": "LinkedIn",
+                        "phone_raw": "",
+                        "phone_normalized": "",
+                        "ad_summary": "",
+                        "ad_summary_en": "",
+                        "rejects_foreigners": False,
+                        "has_phone": False,
+                        "posted_at": posted_at,
+                    }
+                    is_new = upsert_job(job)
+                    if is_new:
+                        new += 1
+                        if len(detail_tasks) < MAX_DETAIL_FETCHES_PER_PORTAL:
+                            detail_tasks.append((entry, url))
+                    found += 1
+                # Fetch detail pages for the first few to enrich the ad text
+                for entry, url in detail_tasks:
+                    await asyncio.sleep(random.uniform(0.3, 1.0))
+                    detail = await fetch_job_detail(detail_page, url, "linkedin")
+                    if not detail:
+                        continue
+                    from ..database import get_job_by_url, update_job_full_text_and_screenshot
+                    existing = get_job_by_url(url)
+                    if existing and len(detail.get("full_text") or "") > len(existing.get("full_text") or ""):
+                        try:
+                            update_job_full_text_and_screenshot(
+                                existing["id"], detail["full_text"], detail.get("screenshot_path") or ""
+                            )
+                        except Exception as e:
+                            logger.debug(f"LI guest detail upgrade failed for {url}: {e}")
+                # Analyze + notify
+                if new > 0:
+                    from ..database import list_recent_jobs_for_portal
+                    recent_jobs = list_recent_jobs_for_portal(
+                        country_code=country_code, category=category_key,
+                        portal_name="LinkedIn", limit=new,
+                    )
+                    semaphore = asyncio.Semaphore(3)
+                    async def _process(j):
+                        async with semaphore:
+                            try:
+                                res = await analyze_and_notify_single(
+                                    country_code,
+                                    j.get("full_text") or j.get("title") or "",
+                                    j["url"], user_id=user_id,
+                                )
+                                logger.info(f"    -> LI guest realtime {j['url'][:60]}... -> {res['status']}")
+                            except Exception as e:
+                                logger.warning(f"    -> LI guest realtime analyze failed: {e}")
+                    await asyncio.gather(*[_process(j) for j in recent_jobs], return_exceptions=True)
+                totals["found"] += found
+                totals["new"] += new
+                logger.info(f"[{country_code}/{category_key}] LinkedIn guest API fallback: found={found} new={new}")
+            except Exception as e:
+                logger.error(f"[{country_code}/{category_key}] LinkedIn guest API fallback failed: {e}")
 
         log_scan_finish(scan_id, totals["found"], totals["new"])
         return totals
