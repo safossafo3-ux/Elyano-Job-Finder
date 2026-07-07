@@ -10,12 +10,17 @@
     min-height: 100vh;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Helvetica, Arial, sans-serif;
     color: #e6e6e6;
-    /* Deep navy base */
-    background: #0a1628;
-    /* Subtle radial accent for depth */
+    /* Same cyan→indigo palette as the GUI (buttons, headings, active tabs).
+       Replaces the old flat #0a1628 solid fill with a layered gradient that
+       visually echoes the frosted-glass cards on top of it. */
+    background-color: #0a1628;
     background-image:
-      radial-gradient(ellipse 800px 400px at 20% 0%, rgba(34,211,238,0.08), transparent),
-      radial-gradient(ellipse 600px 600px at 100% 100%, rgba(99,102,241,0.10), transparent);
+      /* Top-left cyan glow — matches .bot-hero / .primary button gradient start */
+      radial-gradient(ellipse 900px 500px at 12% -5%, rgba(34, 211, 238, 0.18), transparent 60%),
+      /* Bottom-right indigo glow — matches the gradient end used in headings */
+      radial-gradient(ellipse 800px 700px at 95% 105%, rgba(99, 102, 241, 0.20), transparent 60%),
+      /* Diagonal cyan→indigo wash that ties the whole page to the GUI accent */
+      linear-gradient(135deg, #0a1628 0%, #0d1f3a 45%, #0b1530 100%);
     background-attachment: fixed;
     overflow-x: hidden;
   }
@@ -92,9 +97,15 @@
   /* ---------- Login overlay ---------- */
   .login-overlay {
     position: fixed; inset: 0;
-    background: rgba(5, 10, 20, 0.85);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    /* Same cyan→indigo palette as the page background, but with extra opacity
+       so the overlay darkens whatever is behind it for focus. Replaces the
+       old flat rgba(5,10,20,0.85) fill. */
+    background-color: rgba(8, 16, 32, 0.82);
+    background-image:
+      radial-gradient(ellipse 700px 400px at 15% 0%, rgba(34, 211, 238, 0.12), transparent 60%),
+      radial-gradient(ellipse 700px 600px at 95% 100%, rgba(99, 102, 241, 0.14), transparent 60%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     display: flex; align-items: center; justify-content: center;
     z-index: 1000;
     overflow-y: auto;
@@ -1388,6 +1399,64 @@ function showLogin() {
 // ============================================================
 let _authMode = 'login';  // 'login' or 'register'
 
+// ============================================================
+// Safe JSON fetch helper
+// ------------------------------------------------------------
+// The backend always returns JSON for /api/auth/* endpoints.
+// But if a proxy (e.g. Railway returning a 404 HTML page when the
+// app is asleep/restarting, or a 502 from a reverse proxy) intercepts
+// the request, we'll get HTML instead of JSON and `await r.json()`
+// will throw — which previously produced a misleading "Network error"
+// toast. This helper centralises the defensive check and returns a
+// consistent error shape so callers can show meaningful messages.
+// ============================================================
+async function safeJsonFetch(url, options) {
+  let r;
+  try {
+    r = await fetch(url, options || {});
+  } catch (e) {
+    // True network failure — DNS, offline, CORS preflight rejection, etc.
+    return {
+      ok: false,
+      status: 0,
+      error: 'Could not reach the server. Check your connection and try again. ' +
+             '(' + ((e && e.message) || 'network error') + ')',
+    };
+  }
+  const ct = r.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    // Non-JSON response — usually a proxy error page (HTML).
+    let hint;
+    if (r.status === 404 || r.status === 0) {
+      hint = 'The server appears to be down or restarting. Please try again in a few seconds.';
+    } else if (r.status >= 500) {
+      hint = 'Server error (' + r.status + '). The admin has been notified — please retry shortly.';
+    } else {
+      hint = 'Unexpected response from the server (HTTP ' + (r.status || 'unknown') + ').';
+    }
+    return { ok: false, status: r.status, error: hint };
+  }
+  let data;
+  try {
+    data = await r.json();
+  } catch (e) {
+    return {
+      ok: false,
+      status: r.status,
+      error: 'The server returned a malformed response. Please try again.',
+    };
+  }
+  if (!r.ok) {
+    return {
+      ok: false,
+      status: r.status,
+      error: (data && (data.detail || data.message)) || ('Request failed (HTTP ' + r.status + ')'),
+      data: data,
+    };
+  }
+  return { ok: true, status: r.status, data: data };
+}
+
 function switchAuthMethod(method) {
   // Update tab buttons
   document.querySelectorAll('.auth-tab').forEach(t => {
@@ -1464,20 +1533,24 @@ async function submitCredentials() {
     const body = _authMode === 'register'
       ? { email, password, first_name: firstName }
       : { email, password };
-    const r = await fetch(endpoint, {
+    const res = await safeJsonFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await r.json();
-    if (!r.ok) {
-      showToast(data.detail || 'Authentication failed', true);
+    if (!res.ok) {
+      showToast(res.error || 'Authentication failed', true);
       return;
     }
+    const data = res.data || {};
     showToast(data.message || 'Signed in successfully', 'success');
     await refreshUser();
   } catch (e) {
-    showToast('Network error — please try again', true);
+    // Defensive: safeJsonFetch already handles most cases, but if
+    // refreshUser() throws (e.g. /api/me unreachable), we still want a
+    // meaningful message rather than a generic "Network error".
+    const msg = (e && e.message) ? e.message : 'unexpected error';
+    showToast('Sign-in failed: ' + msg, true);
   } finally {
     btn.disabled = false;
     btn.textContent = _authMode === 'register' ? 'Create account →' : 'Sign in →';
@@ -1497,19 +1570,17 @@ async function requestCode() {
   const btn = document.getElementById('requestCodeBtn');
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
-    const r = await fetch('/api/auth/request-code', {
+    const res = await safeJsonFetch('/api/auth/request-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username }),
     });
-    if (!r.ok) {
-      let msg = 'Failed to send code';
-      try { const e = await r.json(); msg = e.detail || msg; } catch {}
-      showToast(msg, true);
+    if (!res.ok) {
+      showToast(res.error || 'Failed to send code', true);
       btn.disabled = false; btn.textContent = 'Send me a code →';
       return;
     }
-    const d = await r.json();
+    const d = res.data || {};
     // If the user hasn't sent /start to the bot yet, show a deep-link button
     if (d.needs_start && d.deep_link) {
       showToast(d.message || 'Open the bot in Telegram to get started.', 'info');
@@ -1551,7 +1622,7 @@ async function requestCode() {
     setTimeout(() => document.getElementById('codeInput').focus(), 100);
     btn.disabled = false; btn.textContent = 'Send me a code →';
   } catch (e) {
-    showToast('Error: ' + e.message, true);
+    showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
     btn.disabled = false; btn.textContent = 'Send me a code →';
   }
 }
@@ -1573,23 +1644,21 @@ async function verifyCode() {
   const btn = document.getElementById('verifyCodeBtn');
   btn.disabled = true; btn.textContent = 'Verifying…';
   try {
-    const r = await fetch('/api/auth/verify-code', {
+    const res = await safeJsonFetch('/api/auth/verify-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     });
-    if (!r.ok) {
-      let msg = 'Invalid or expired code';
-      try { const e = await r.json(); msg = e.detail || msg; } catch {}
-      showToast(msg, true);
+    if (!res.ok) {
+      showToast(res.error || 'Invalid or expired code', true);
       btn.disabled = false; btn.textContent = 'Verify & sign in ✓';
       return;
     }
-    const d = await r.json();
+    const d = res.data || {};
     showToast(`✅ Welcome, ${d.first_name || d.username || 'user'}!`);
     setTimeout(() => location.reload(), 1200);
   } catch (e) {
-    showToast('Error: ' + e.message, true);
+    showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
     btn.disabled = false; btn.textContent = 'Verify & sign in ✓';
   }
 }
