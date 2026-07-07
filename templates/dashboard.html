@@ -786,77 +786,100 @@
 <!-- ============== LOGIN OVERLAY ============== -->
 <div class="login-overlay" id="loginOverlay" style="display:none;">
   <div class="login-card glass">
-    <!-- Auth method tabs -->
+    <!-- Auth method tabs: Sign in (returning) | Email (register) | Telegram (register) -->
     <div class="auth-tabs" id="authTabs">
-      <button class="auth-tab active" data-method="credentials" onclick="switchAuthMethod('credentials')">📧 Email</button>
-      <button class="auth-tab" data-method="google" onclick="switchAuthMethod('google')">🌐 Gmail</button>
-      <button class="auth-tab" data-method="telegram" onclick="switchAuthMethod('telegram')">💬 Telegram</button>
+      <button class="auth-tab active" data-method="signin" onclick="switchAuthMethod('signin')">🔑 Sign in</button>
+      <button class="auth-tab" data-method="email" onclick="switchAuthMethod('email')">📧 Register · Email</button>
+      <button class="auth-tab" data-method="telegram" onclick="switchAuthMethod('telegram')">💬 Register · Telegram</button>
     </div>
 
-    <!-- Mode toggle: Sign in / Register (only for credentials method) -->
-    <div class="auth-mode-toggle" id="authModeToggle">
-      <button class="auth-mode-btn active" id="modeLoginBtn" onclick="setAuthMode('login')">Sign in</button>
-      <button class="auth-mode-btn" id="modeRegisterBtn" onclick="setAuthMode('register')">Register</button>
-    </div>
+    <!-- ============ SIGN IN (returning users: username/email + password) ============ -->
+    <div id="authSignin" class="auth-panel">
+      <h2 id="signinTitle">🔐 Welcome back</h2>
+      <p id="signinSubtitle">Sign in with your username (or email) and password.</p>
 
-    <!-- ============ CREDENTIALS (email + password) ============ -->
-    <div id="authCredentials" class="auth-panel">
-      <h2 id="credentialsTitle">🔐 Sign in</h2>
-      <p id="credentialsSubtitle">Enter your email and password to continue.</p>
-
-      <input type="text" class="username-input" id="emailInput"
-             placeholder="your@email.com"
-             autocomplete="email" autocapitalize="none" spellcheck="false"
+      <input type="text" class="username-input" id="signinIdentifierInput"
+             placeholder="username OR email"
+             autocomplete="username" autocapitalize="none" spellcheck="false"
              style="margin-bottom:10px;">
 
-      <input type="password" class="username-input" id="passwordInput"
-             placeholder="password (min 6 characters)"
+      <input type="password" class="username-input" id="signinPasswordInput"
+             placeholder="password"
              autocomplete="current-password"
              style="margin-bottom:6px;">
 
-      <input type="text" class="username-input" id="firstNameInput"
-             placeholder="your name (optional, for registration)"
-             autocomplete="name"
-             style="margin-bottom:6px; display:none;">
-
       <div class="login-actions">
-        <button class="primary" id="credentialsSubmitBtn" onclick="submitCredentials()">Sign in →</button>
+        <button class="primary" id="signinSubmitBtn" onclick="submitSignin()">Sign in →</button>
       </div>
-      <p style="margin-top:12px; font-size:11px; color:#64748b;" id="credentialsHint">
-        New here? Tap <b>Register</b> above to create an account with email + password.
+      <p style="margin-top:12px; font-size:11px; color:#64748b;" id="signinHint">
+        New here? Use <b>Register · Email</b> or <b>Register · Telegram</b> above to create an account.
       </p>
     </div>
 
-    <!-- ============ GOOGLE (Gmail OAuth) ============ -->
-    <div id="authGoogle" class="auth-panel" style="display:none;">
-      <h2>🌐 Sign in with Gmail</h2>
-      <p>Use your Google account to sign in. No password needed — Google handles the security.</p>
-      {% if google_oauth_enabled %}
-      <div class="login-actions" style="margin-top:18px;">
-        <button class="bot-hero" style="margin:0; padding:14px 22px; border:none; cursor:pointer; font-size:15px;"
-                onclick="window.location.href='/api/auth/google/start';">
-          <span class="bot-emoji">🌐</span>
-          Continue with Google
-          <span class="bot-arrow">→</span>
-        </button>
+    <!-- ============ REGISTER VIA EMAIL (email → code → set credentials) ============ -->
+    <div id="authEmail" class="auth-panel" style="display:none;">
+      <!-- Step 1: enter email -->
+      <div id="emailStep1">
+        <h2>📧 Register with Email</h2>
+        <p>Enter your email — we'll send you a 6-digit code to verify it's really you.</p>
+        <input type="email" class="username-input" id="emailRegisterInput"
+               placeholder="your@email.com"
+               autocomplete="email" autocapitalize="none" spellcheck="false"
+               style="margin-bottom:10px;">
+        <div class="login-actions">
+          <button class="primary" id="emailRegisterBtn" onclick="requestEmailCode()">Send me a code →</button>
+        </div>
+        <p style="margin-top:12px; font-size:11px; color:#64748b;">
+          After verifying your email, you'll choose a username and password to finish.
+        </p>
       </div>
-      <p style="margin-top:14px; font-size:11px; color:#64748b;">
-        You'll be redirected to Google to sign in, then back to JobRadar.
-      </p>
-      {% else %}
-      <div style="margin-top:18px; padding:14px; background:rgba(248,113,113,0.08); border:1px solid rgba(248,113,113,0.3); border-radius:10px; color:#f87171; font-size:13px;">
-        ⚠️ Google sign-in is not configured on the server yet. The admin needs to set
-        <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code> environment variables.
-        Meanwhile, you can use <b>Email</b> or <b>Telegram</b> to sign in.
+
+      <!-- Step 2: enter code -->
+      <div id="emailStep2" style="display:none;">
+        <h2>📲 Enter the code</h2>
+        <p id="emailCodeSentMsg">A 6-digit code was sent to your email.</p>
+        <input type="text" class="username-input" id="emailCodeInput"
+               placeholder="••••••" maxlength="6" inputmode="numeric"
+               autocomplete="one-time-code" style="margin-bottom:10px;">
+        <div class="login-actions">
+          <button class="login-back-btn" onclick="backToEmailStep1()">← Back</button>
+          <button class="primary" id="emailVerifyBtn" onclick="verifyEmailCode()">Verify code →</button>
+        </div>
+        <p style="margin-top:12px; font-size:11px; color:#64748b;">
+          ⏱️ Code expires in 10 minutes.
+          <a href="#" onclick="requestEmailCode(true); return false;" style="color:#22d3ee; margin-left:8px;">Resend code</a>
+        </p>
       </div>
-      {% endif %}
+
+      <!-- Step 3: set username + password -->
+      <div id="emailStep3" style="display:none;">
+        <h2>✅ Almost done!</h2>
+        <p>Choose a username and password for your account.</p>
+        <input type="text" class="username-input" id="emailUsernameInput"
+               placeholder="choose a username (3–32 chars, letters/numbers/_/.)"
+               autocomplete="username" autocapitalize="none" spellcheck="false"
+               style="margin-bottom:10px;">
+        <input type="password" class="username-input" id="emailPasswordInput"
+               placeholder="choose a password (min 6 characters)"
+               autocomplete="new-password" style="margin-bottom:10px;">
+        <input type="text" class="username-input" id="emailFirstNameInput"
+               placeholder="your name (optional)"
+               autocomplete="name" style="margin-bottom:6px;">
+        <div class="login-actions">
+          <button class="primary" id="emailCreateBtn" onclick="createEmailAccount()">Create account →</button>
+        </div>
+        <p style="margin-top:12px; font-size:11px; color:#64748b;">
+          You'll use this username + password to sign in next time.
+        </p>
+      </div>
     </div>
 
-    <!-- ============ TELEGRAM (existing flow) ============ -->
+    <!-- ============ REGISTER VIA TELEGRAM (@username → code → set credentials) ============ -->
     <div id="authTelegram" class="auth-panel" style="display:none;">
-      <div id="loginStep1">
-        <h2>🔐 Sign in with Telegram</h2>
-        <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
+      <!-- Step 1: open bot + enter Telegram username -->
+      <div id="tgStep1">
+        <h2>💬 Register with Telegram</h2>
+        <p>JobRadar sends you job alerts straight to your Telegram chat. Verify your Telegram to register.</p>
 
         {% if telegram_bot_username %}
         <a class="bot-hero" id="botHeroBtn"
@@ -880,17 +903,17 @@
         </div>
         {% else %}
         <p style="color:#f87171; font-size:12px;">
-          ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set on the server. Set it so the login link works.
+          ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set on the server. Set it so the registration link works.
         </p>
         {% endif %}
 
         <div class="login-steps">
           <ol>
             <li>Tap <b>"Open @{{ telegram_bot_username or 'bot' }} in Telegram"</b> above</li>
-            <li>Press <b>Start</b> in Telegram (this registers you)</li>
+            <li>Press <b>Start</b> in Telegram (this lets us DM you)</li>
             <li>Come back here and type your <b>Telegram username</b></li>
             <li>Tap <b>"Send me a code"</b> — the bot DMs you a 6-digit code</li>
-            <li>Type the code here to sign in ✓</li>
+            <li>Type the code, then choose a username + password for sign-in</li>
           </ol>
         </div>
 
@@ -899,7 +922,7 @@
                autocomplete="username" autocapitalize="none" spellcheck="false">
 
         <div class="login-actions">
-          <button class="primary" id="requestCodeBtn" onclick="requestCode()">Send me a code →</button>
+          <button class="primary" id="requestCodeBtn" onclick="requestTelegramCode()">Send me a code →</button>
         </div>
 
         <div id="loginNeedsStart" style="display:none; margin-top:18px; padding:14px; background:rgba(34,211,238,0.08); border:1px solid rgba(34,211,238,0.3); border-radius:10px;">
@@ -925,17 +948,41 @@
       </div>
 
       <!-- Step 2: enter code -->
-      <div id="loginStep2" style="display:none;">
+      <div id="tgStep2" style="display:none;">
         <h2>📲 Enter your code</h2>
-        <p id="codeSentMsg">A 6-digit code was sent to your Telegram chat.</p>
-        <input type="text" class="code-input" id="codeInput" placeholder="••••••" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+        <p id="tgCodeSentMsg">A 6-digit code was sent to your Telegram chat.</p>
+        <input type="text" class="username-input" id="tgCodeInput"
+               placeholder="••••••" maxlength="6" inputmode="numeric"
+               autocomplete="one-time-code" style="margin-bottom:10px;">
         <div class="login-actions">
-          <button class="login-back-btn" onclick="backToStep1()">← Back</button>
-          <button class="primary" id="verifyCodeBtn" onclick="verifyCode()">Verify &amp; sign in ✓</button>
+          <button class="login-back-btn" onclick="backToTgStep1()">← Back</button>
+          <button class="primary" id="tgVerifyBtn" onclick="verifyTelegramCode()">Verify code →</button>
         </div>
-        <p style="margin-top:14px; font-size:11px; color:#64748b;">
+        <p style="margin-top:12px; font-size:11px; color:#64748b;">
           ⏱️ Code expires in 10 minutes.
-          <a href="#" onclick="requestCode(); return false;" style="color:#22d3ee; margin-left:8px;">Resend code</a>
+          <a href="#" onclick="requestTelegramCode(true); return false;" style="color:#22d3ee; margin-left:8px;">Resend code</a>
+        </p>
+      </div>
+
+      <!-- Step 3: set username + password -->
+      <div id="tgStep3" style="display:none;">
+        <h2>✅ Almost done!</h2>
+        <p>Choose a username and password for your account.</p>
+        <input type="text" class="username-input" id="tgUsernameInput"
+               placeholder="choose a username (3–32 chars, letters/numbers/_/.)"
+               autocomplete="username" autocapitalize="none" spellcheck="false"
+               style="margin-bottom:10px;">
+        <input type="password" class="username-input" id="tgPasswordInput"
+               placeholder="choose a password (min 6 characters)"
+               autocomplete="new-password" style="margin-bottom:10px;">
+        <input type="text" class="username-input" id="tgFirstNameInput"
+               placeholder="your name (optional)"
+               autocomplete="name" style="margin-bottom:6px;">
+        <div class="login-actions">
+          <button class="primary" id="tgCreateBtn" onclick="createTelegramAccount()">Create account →</button>
+        </div>
+        <p style="margin-top:12px; font-size:11px; color:#64748b;">
+          You'll use this username + password to sign in next time. (Your Telegram stays linked for job alerts.)
         </p>
       </div>
     </div>
@@ -1380,24 +1427,24 @@ async function init() {
 
 function showLogin() {
   document.getElementById('loginOverlay').style.display = 'flex';
-  // Default to credentials tab, login mode
-  switchAuthMethod('credentials');
-  setAuthMode('login');
-  // Reset Telegram step 1 if it was on step 2
-  const step1 = document.getElementById('loginStep1');
-  const step2 = document.getElementById('loginStep2');
-  if (step1) step1.style.display = 'block';
-  if (step2) step2.style.display = 'none';
+  // Default to Sign in tab
+  switchAuthMethod('signin');
+  // Reset all multi-step panels
+  ['emailStep2', 'emailStep3', 'tgStep2', 'tgStep3'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  ['emailStep1', 'tgStep1'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'block';
+  });
+  const ns = document.getElementById('loginNeedsStart');
+  if (ns) ns.style.display = 'none';
   setTimeout(() => {
-    const emailInput = document.getElementById('emailInput');
-    if (emailInput) emailInput.focus();
+    const signinInput = document.getElementById('signinIdentifierInput');
+    if (signinInput) signinInput.focus();
   }, 100);
 }
-
-// ============================================================
-// Multi-auth: switch between Email / Gmail / Telegram tabs
-// ============================================================
-let _authMode = 'login';  // 'login' or 'register'
 
 // ============================================================
 // Safe JSON fetch helper
@@ -1463,15 +1510,16 @@ function switchAuthMethod(method) {
     t.classList.toggle('active', t.dataset.method === method);
   });
   // Show/hide panels
-  document.getElementById('authCredentials').style.display = method === 'credentials' ? 'block' : 'none';
-  document.getElementById('authGoogle').style.display = method === 'google' ? 'block' : 'none';
+  document.getElementById('authSignin').style.display  = method === 'signin'   ? 'block' : 'none';
+  document.getElementById('authEmail').style.display   = method === 'email'    ? 'block' : 'none';
   document.getElementById('authTelegram').style.display = method === 'telegram' ? 'block' : 'none';
-  // Show/hide the Sign in / Register toggle (only for credentials)
-  document.getElementById('authModeToggle').style.display = method === 'credentials' ? 'flex' : 'none';
   // Focus the first input
   setTimeout(() => {
-    if (method === 'credentials') {
-      const el = document.getElementById('emailInput');
+    if (method === 'signin') {
+      const el = document.getElementById('signinIdentifierInput');
+      if (el) el.focus();
+    } else if (method === 'email') {
+      const el = document.getElementById('emailRegisterInput');
       if (el) el.focus();
     } else if (method === 'telegram') {
       const el = document.getElementById('usernameInput');
@@ -1480,85 +1528,183 @@ function switchAuthMethod(method) {
   }, 100);
 }
 
-function setAuthMode(mode) {
-  _authMode = mode;
-  document.getElementById('modeLoginBtn').classList.toggle('active', mode === 'login');
-  document.getElementById('modeRegisterBtn').classList.toggle('active', mode === 'register');
-  // Update titles and button labels
-  const title = document.getElementById('credentialsTitle');
-  const subtitle = document.getElementById('credentialsSubtitle');
-  const submitBtn = document.getElementById('credentialsSubmitBtn');
-  const hint = document.getElementById('credentialsHint');
-  const firstNameInput = document.getElementById('firstNameInput');
-  const passwordInput = document.getElementById('passwordInput');
-  if (mode === 'register') {
-    if (title) title.textContent = '📝 Create your account';
-    if (subtitle) subtitle.textContent = 'Register with your email and a password. You can also link Telegram later from Settings.';
-    if (submitBtn) submitBtn.textContent = 'Create account →';
-    if (hint) hint.innerHTML = 'Already have an account? Tap <b>Sign in</b> above.';
-    if (firstNameInput) firstNameInput.style.display = 'block';
-    if (passwordInput) passwordInput.placeholder = 'choose a password (min 6 characters)';
-  } else {
-    if (title) title.textContent = '🔐 Sign in';
-    if (subtitle) subtitle.textContent = 'Enter your email and password to continue.';
-    if (submitBtn) submitBtn.textContent = 'Sign in →';
-    if (hint) hint.innerHTML = 'New here? Tap <b>Register</b> above to create an account with email + password.';
-    if (firstNameInput) firstNameInput.style.display = 'none';
-    if (passwordInput) passwordInput.placeholder = 'password (min 6 characters)';
-  }
-}
-
 // ============================================================
-// Submit credentials (register or login)
+// SIGN IN (returning users: username/email + password)
 // ============================================================
-async function submitCredentials() {
-  const email = (document.getElementById('emailInput').value || '').trim().toLowerCase();
-  const password = document.getElementById('passwordInput').value || '';
-  const firstName = (document.getElementById('firstNameInput').value || '').trim();
-  const btn = document.getElementById('credentialsSubmitBtn');
+async function submitSignin() {
+  const identifier = (document.getElementById('signinIdentifierInput').value || '').trim();
+  const password = document.getElementById('signinPasswordInput').value || '';
+  const btn = document.getElementById('signinSubmitBtn');
 
-  if (!email) { showToast('Enter your email address', true); return; }
-  if (!email.includes('@') || !email.split('@').pop().includes('.')) {
-    showToast('Please enter a valid email address', true); return;
-  }
+  if (!identifier) { showToast('Enter your username or email', true); return; }
   if (!password) { showToast('Enter your password', true); return; }
-  if (_authMode === 'register' && password.length < 6) {
-    showToast('Password must be at least 6 characters', true); return;
-  }
 
   btn.disabled = true;
-  btn.textContent = _authMode === 'register' ? 'Creating…' : 'Signing in…';
+  btn.textContent = 'Signing in…';
   try {
-    const endpoint = _authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
-    const body = _authMode === 'register'
-      ? { email, password, first_name: firstName }
-      : { email, password };
-    const res = await safeJsonFetch(endpoint, {
+    const res = await safeJsonFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ email: identifier, password }),
     });
     if (!res.ok) {
-      showToast(res.error || 'Authentication failed', true);
+      showToast(res.error || 'Sign-in failed', true);
       return;
     }
     const data = res.data || {};
     showToast(data.message || 'Signed in successfully', 'success');
     await refreshUser();
   } catch (e) {
-    // Defensive: safeJsonFetch already handles most cases, but if
-    // refreshUser() throws (e.g. /api/me unreachable), we still want a
-    // meaningful message rather than a generic "Network error".
     const msg = (e && e.message) ? e.message : 'unexpected error';
     showToast('Sign-in failed: ' + msg, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = _authMode === 'register' ? 'Create account →' : 'Sign in →';
+    btn.textContent = 'Sign in →';
   }
 }
 
-// Step 1: user submits username → backend asks bot to send a 6-digit code
-async function requestCode() {
+// ============================================================
+// REGISTER VIA EMAIL (email → code → set credentials)
+// ============================================================
+let _emailRegToken = null;  // Holds the verified registration token (= 6-digit code)
+
+// Step 1: user submits email → backend sends a 6-digit code
+async function requestEmailCode(isResend) {
+  const email = (document.getElementById('emailRegisterInput').value || '').trim().toLowerCase();
+  if (!email) { showToast('Enter your email address', true); return; }
+  if (!email.includes('@') || !email.split('@').pop().includes('.')) {
+    showToast('Please enter a valid email address', true); return;
+  }
+  const btn = document.getElementById('emailRegisterBtn');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const res = await safeJsonFetch('/api/auth/email/request-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (!res.ok) {
+      showToast(res.error || 'Failed to send code', true);
+      btn.disabled = false; btn.textContent = 'Send me a code →';
+      return;
+    }
+    const d = res.data || {};
+    // Dev mode: backend returns the code in the response when SMTP isn't configured
+    if (d.dev_code) {
+      showToast('Dev mode: your code is ' + d.dev_code, 'info');
+      // Also pre-fill the code input to make testing easier
+      const codeInput = document.getElementById('emailCodeInput');
+      if (codeInput) codeInput.value = d.dev_code;
+    } else {
+      showToast(d.message || 'Code sent to your email.', 'info');
+    }
+    // Move to step 2
+    document.getElementById('emailStep1').style.display = 'none';
+    document.getElementById('emailStep2').style.display = 'block';
+    document.getElementById('emailCodeSentMsg').innerHTML =
+      `A 6-digit code was sent to <code>${email}</code>. Enter it below to continue.`;
+    setTimeout(() => document.getElementById('emailCodeInput').focus(), 100);
+    btn.disabled = false; btn.textContent = 'Send me a code →';
+  } catch (e) {
+    showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
+    btn.disabled = false; btn.textContent = 'Send me a code →';
+  }
+}
+
+function backToEmailStep1() {
+  document.getElementById('emailStep1').style.display = 'block';
+  document.getElementById('emailStep2').style.display = 'none';
+  const codeInput = document.getElementById('emailCodeInput');
+  if (codeInput) codeInput.value = '';
+}
+
+// Step 2: user submits the code → backend verifies (without consuming)
+async function verifyEmailCode() {
+  const email = (document.getElementById('emailRegisterInput').value || '').trim().toLowerCase();
+  const code = (document.getElementById('emailCodeInput').value || '').trim();
+  if (!code) { showToast('Enter the 6-digit code', true); return; }
+  if (!/^\d{6}$/.test(code)) { showToast('Code must be 6 digits', true); return; }
+  const btn = document.getElementById('emailVerifyBtn');
+  btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const res = await safeJsonFetch('/api/auth/email/verify-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code }),
+    });
+    if (!res.ok) {
+      showToast(res.error || 'Invalid or expired code', true);
+      btn.disabled = false; btn.textContent = 'Verify code →';
+      return;
+    }
+    const d = res.data || {};
+    _emailRegToken = d.registration_token || code;
+    showToast(d.message || 'Email verified!', 'success');
+    // Move to step 3
+    document.getElementById('emailStep2').style.display = 'none';
+    document.getElementById('emailStep3').style.display = 'block';
+    // Pre-suggest a username based on the email
+    const suggested = email.split('@')[0].replace(/[^a-zA-Z0-9_.]/g, '');
+    const usernameInput = document.getElementById('emailUsernameInput');
+    if (usernameInput && !usernameInput.value) usernameInput.value = suggested;
+    setTimeout(() => usernameInput.focus(), 100);
+    btn.disabled = false; btn.textContent = 'Verify code →';
+  } catch (e) {
+    showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
+    btn.disabled = false; btn.textContent = 'Verify code →';
+  }
+}
+
+// Step 3: user sets username + password → backend creates account
+async function createEmailAccount() {
+  const code = _emailRegToken || (document.getElementById('emailCodeInput').value || '').trim();
+  const username = (document.getElementById('emailUsernameInput').value || '').trim().replace(/^@/, '');
+  const password = document.getElementById('emailPasswordInput').value || '';
+  const firstName = (document.getElementById('emailFirstNameInput').value || '').trim();
+  const btn = document.getElementById('emailCreateBtn');
+
+  if (!username) { showToast('Choose a username', true); return; }
+  if (username.length < 3) { showToast('Username must be at least 3 characters', true); return; }
+  if (!/^[a-zA-Z0-9_.]+$/.test(username)) {
+    showToast('Username can only contain letters, numbers, underscores, and dots', true); return;
+  }
+  if (!password) { showToast('Choose a password', true); return; }
+  if (password.length < 6) { showToast('Password must be at least 6 characters', true); return; }
+
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const res = await safeJsonFetch('/api/auth/create-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: code,
+        username: username,
+        password: password,
+        first_name: firstName,
+      }),
+    });
+    if (!res.ok) {
+      showToast(res.error || 'Account creation failed', true);
+      btn.disabled = false; btn.textContent = 'Create account →';
+      return;
+    }
+    const d = res.data || {};
+    showToast(d.message || "Account created! You're signed in.", 'success');
+    _emailRegToken = null;
+    await refreshUser();
+  } catch (e) {
+    showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
+    btn.disabled = false; btn.textContent = 'Create account →';
+  }
+}
+
+// ============================================================
+// REGISTER VIA TELEGRAM (@username → code → set credentials)
+// ============================================================
+let _tgRegToken = null;  // Holds the verified registration token (= 6-digit code)
+
+// Step 1: user submits @username → backend DMs a 6-digit code via the bot
+async function requestTelegramCode(isResend) {
   const username = document.getElementById('usernameInput').value.trim().replace(/^@/, '');
   if (!username) { showToast('Enter your Telegram username', true); return; }
   if (username.length < 5 || username.length > 32) {
@@ -1570,7 +1716,7 @@ async function requestCode() {
   const btn = document.getElementById('requestCodeBtn');
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
-    const res = await safeJsonFetch('/api/auth/request-code', {
+    const res = await safeJsonFetch('/api/auth/telegram/request-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username }),
@@ -1611,15 +1757,21 @@ async function requestCode() {
       btn.disabled = false; btn.textContent = 'Send me a code →';
       return;
     }
+    // If the user is already registered, suggest they sign in instead
+    if (d.already_registered) {
+      showToast(d.message || "You're already registered — try signing in instead.", 'info');
+      btn.disabled = false; btn.textContent = 'Send me a code →';
+      return;
+    }
     showToast(d.message || 'Code sent to your Telegram chat.', 'info');
     // Move to step 2
-    document.getElementById('loginStep1').style.display = 'none';
+    document.getElementById('tgStep1').style.display = 'none';
     const needsStart = document.getElementById('loginNeedsStart');
     if (needsStart) needsStart.style.display = 'none';
-    document.getElementById('loginStep2').style.display = 'block';
-    document.getElementById('codeSentMsg').innerHTML =
-      `A 6-digit code was sent to your Telegram chat <code>@${d.bot_username || state.botUsername || 'our_bot'}</code>. Enter it below to sign in.`;
-    setTimeout(() => document.getElementById('codeInput').focus(), 100);
+    document.getElementById('tgStep2').style.display = 'block';
+    document.getElementById('tgCodeSentMsg').innerHTML =
+      `A 6-digit code was sent to your Telegram chat <code>@${d.bot_username || state.botUsername || 'our_bot'}</code>. Enter it below to continue.`;
+    setTimeout(() => document.getElementById('tgCodeInput').focus(), 100);
     btn.disabled = false; btn.textContent = 'Send me a code →';
   } catch (e) {
     showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
@@ -1627,39 +1779,101 @@ async function requestCode() {
   }
 }
 
-function backToStep1() {
-  document.getElementById('loginStep1').style.display = 'block';
-  document.getElementById('loginStep2').style.display = 'none';
-  document.getElementById('codeInput').value = '';
-  // Keep the needs-start panel hidden when re-entering step 1 unless the user clicks Send again
+function backToTgStep1() {
+  document.getElementById('tgStep1').style.display = 'block';
+  document.getElementById('tgStep2').style.display = 'none';
+  const codeInput = document.getElementById('tgCodeInput');
+  if (codeInput) codeInput.value = '';
   const ns = document.getElementById('loginNeedsStart');
   if (ns) ns.style.display = 'none';
 }
 
-// Step 2: user submits the code → backend validates and creates session
-async function verifyCode() {
-  const code = document.getElementById('codeInput').value.trim();
+// Step 2: user submits the code → backend verifies (without consuming)
+async function verifyTelegramCode() {
+  const code = (document.getElementById('tgCodeInput').value || '').trim();
   if (!code) { showToast('Enter the 6-digit code', true); return; }
   if (!/^\d{6}$/.test(code)) { showToast('Code must be 6 digits', true); return; }
-  const btn = document.getElementById('verifyCodeBtn');
+  const btn = document.getElementById('tgVerifyBtn');
   btn.disabled = true; btn.textContent = 'Verifying…';
   try {
-    const res = await safeJsonFetch('/api/auth/verify-code', {
+    const res = await safeJsonFetch('/api/auth/telegram/verify-code', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     });
     if (!res.ok) {
       showToast(res.error || 'Invalid or expired code', true);
-      btn.disabled = false; btn.textContent = 'Verify & sign in ✓';
+      btn.disabled = false; btn.textContent = 'Verify code →';
       return;
     }
     const d = res.data || {};
-    showToast(`✅ Welcome, ${d.first_name || d.username || 'user'}!`);
-    setTimeout(() => location.reload(), 1200);
+    // If the user is already registered, log them in
+    if (d.already_registered) {
+      showToast(d.message || 'Welcome back!', 'success');
+      setTimeout(() => location.reload(), 1200);
+      return;
+    }
+    _tgRegToken = d.registration_token || code;
+    showToast(d.message || 'Telegram verified!', 'success');
+    // Move to step 3
+    document.getElementById('tgStep2').style.display = 'none';
+    document.getElementById('tgStep3').style.display = 'block';
+    // Pre-suggest a username based on their Telegram username
+    const tgUsername = d.telegram_username || '';
+    const suggested = tgUsername || '';
+    const usernameInput = document.getElementById('tgUsernameInput');
+    if (usernameInput && !usernameInput.value && suggested) usernameInput.value = suggested;
+    // Pre-fill first name from Telegram
+    const firstNameInput = document.getElementById('tgFirstNameInput');
+    if (firstNameInput && !firstNameInput.value && d.first_name) firstNameInput.value = d.first_name;
+    setTimeout(() => usernameInput.focus(), 100);
+    btn.disabled = false; btn.textContent = 'Verify code →';
   } catch (e) {
     showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
-    btn.disabled = false; btn.textContent = 'Verify & sign in ✓';
+    btn.disabled = false; btn.textContent = 'Verify code →';
+  }
+}
+
+// Step 3: user sets username + password → backend creates account
+async function createTelegramAccount() {
+  const code = _tgRegToken || (document.getElementById('tgCodeInput').value || '').trim();
+  const username = (document.getElementById('tgUsernameInput').value || '').trim().replace(/^@/, '');
+  const password = document.getElementById('tgPasswordInput').value || '';
+  const firstName = (document.getElementById('tgFirstNameInput').value || '').trim();
+  const btn = document.getElementById('tgCreateBtn');
+
+  if (!username) { showToast('Choose a username', true); return; }
+  if (username.length < 3) { showToast('Username must be at least 3 characters', true); return; }
+  if (!/^[a-zA-Z0-9_.]+$/.test(username)) {
+    showToast('Username can only contain letters, numbers, underscores, and dots', true); return;
+  }
+  if (!password) { showToast('Choose a password', true); return; }
+  if (password.length < 6) { showToast('Password must be at least 6 characters', true); return; }
+
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const res = await safeJsonFetch('/api/auth/create-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: code,
+        username: username,
+        password: password,
+        first_name: firstName,
+      }),
+    });
+    if (!res.ok) {
+      showToast(res.error || 'Account creation failed', true);
+      btn.disabled = false; btn.textContent = 'Create account →';
+      return;
+    }
+    const d = res.data || {};
+    showToast(d.message || "Account created! You're signed in.", 'success');
+    _tgRegToken = null;
+    await refreshUser();
+  } catch (e) {
+    showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
+    btn.disabled = false; btn.textContent = 'Create account →';
   }
 }
 
@@ -1668,11 +1882,34 @@ async function logout() {
   location.reload();
 }
 
+// Wire up Enter keys on the new auth inputs
 document.getElementById('usernameInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') requestCode();
+  if (e.key === 'Enter') requestTelegramCode();
 });
-document.getElementById('codeInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') verifyCode();
+document.getElementById('signinIdentifierInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    // Move focus to password instead of submitting (so user can type password)
+    const pw = document.getElementById('signinPasswordInput');
+    if (pw) pw.focus();
+  }
+});
+document.getElementById('signinPasswordInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') submitSignin();
+});
+document.getElementById('emailRegisterInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') requestEmailCode();
+});
+document.getElementById('emailCodeInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') verifyEmailCode();
+});
+document.getElementById('emailPasswordInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') createEmailAccount();
+});
+document.getElementById('tgCodeInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') verifyTelegramCode();
+});
+document.getElementById('tgPasswordInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') createTelegramAccount();
 });
 
 // ============================================================

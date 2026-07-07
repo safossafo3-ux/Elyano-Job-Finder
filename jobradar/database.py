@@ -187,6 +187,25 @@ CREATE TABLE IF NOT EXISTS job_alert_digest (
     FOREIGN KEY(user_id) REFERENCES users(id),
     FOREIGN KEY(saved_search_id) REFERENCES saved_searches(id)
 );
+
+-- Registration codes (new unified framework, 2026-07)
+-- Stores 6-digit verification codes for BOTH email and Telegram registration.
+-- A code is issued when the user requests registration; it's consumed when
+-- they finish creating their account (set username + password).
+CREATE TABLE IF NOT EXISTS registration_codes (
+    code TEXT PRIMARY KEY,
+    method TEXT NOT NULL,            -- 'email' | 'telegram'
+    identifier TEXT NOT NULL,        -- email address OR telegram username (lowercase, no @)
+    telegram_user_id INTEGER,        -- nullable, only for telegram method
+    telegram_chat_id INTEGER,        -- nullable, only for telegram method
+    first_name TEXT,                 -- nullable, only for telegram method
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_reg_codes_method_identifier
+    ON registration_codes(method, identifier, used);
 """
 
 # Migrations for existing databases (idempotent — safe to run multiple times)
@@ -523,6 +542,124 @@ def consume_login_code(code: str) -> Optional[Dict[str, Any]]:
         }
 
 
+# ---------------------------------------------------------------------------
+# Registration codes (new unified framework, 2026-07)
+# ---------------------------------------------------------------------------
+# A registration code is a 6-digit one-time code issued for EITHER email or
+# Telegram registration. The flow is:
+#   1. User enters email (or Telegram username) → backend creates a code and
+#      sends it via email (or Telegram bot).
+#   2. User enters the code → backend verifies it (peek_registration_code)
+#      and issues a one-time registration_token that proves "this identifier
+#      was verified".
+#   3. User submits final username + password → backend calls
+#      consume_registration_code(registration_token) to atomically mark the
+#      code as used and create the user account.
+#
+# The registration_token IS the same as the 6-digit code — we keep it simple
+# and don't issue a second token. consume_registration_code is idempotent:
+# calling it twice with the same code returns None the second time.
+
+def create_registration_code(method: str, identifier: str,
+                             telegram_user_id: Optional[int] = None,
+                             telegram_chat_id: Optional[int] = None,
+                             first_name: str = "",
+                             expires_minutes: int = 10) -> str:
+    """Create a new 6-digit registration code. Invalidates any previous
+    unused codes for the same (method, identifier) pair. Returns the code.
+
+    method: 'email' or 'telegram'
+    identifier: email address (lowercase) or Telegram username (lowercase, no @)
+    """
+    if method not in ("email", "telegram"):
+        raise ValueError(f"Invalid method: {method}")
+    if not identifier:
+        raise ValueError("Identifier is required")
+
+    code = f"{secrets.randbelow(1000000):06d}"
+    now = datetime.utcnow()
+    expires = now + timedelta(minutes=expires_minutes)
+
+    with get_conn() as conn:
+        # Invalidate previous unused codes for this method+identifier
+        conn.execute(
+            """UPDATE registration_codes SET used=1
+               WHERE method=? AND identifier=? AND used=0""",
+            (method, identifier)
+        )
+        conn.execute(
+            """INSERT INTO registration_codes
+               (code, method, identifier, telegram_user_id, telegram_chat_id,
+                first_name, created_at, expires_at, used)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+            (code, method, identifier, telegram_user_id, telegram_chat_id,
+             first_name or "", now.isoformat(), expires.isoformat())
+        )
+    return code
+
+
+def peek_registration_code(code: str) -> Optional[Dict[str, Any]]:
+    """Validate a registration code WITHOUT consuming it. Used for the
+    "verify code" step. Returns the code's row dict if valid, None otherwise.
+
+    The code is NOT marked as used — the caller must later call
+    consume_registration_code() when the user finishes setting their
+    username + password. This way, if the user abandons the flow mid-way,
+    they can re-enter the same code to continue.
+    """
+    if not code:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM registration_codes WHERE code=? AND used=0",
+            (code,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        # Check expiry
+        try:
+            expires = datetime.fromisoformat(d["expires_at"])
+            if datetime.utcnow() > expires:
+                return None
+        except Exception:
+            return None
+        return d
+
+
+def consume_registration_code(code: str) -> Optional[Dict[str, Any]]:
+    """Atomically consume a registration code. Returns the code's row dict
+    if valid (and marks it as used), None otherwise. Safe to call multiple
+    times — only the first call succeeds."""
+    if not code:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM registration_codes WHERE code=? AND used=0",
+            (code,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            expires = datetime.fromisoformat(d["expires_at"])
+            if datetime.utcnow() > expires:
+                # Mark expired code as used so it can't be retried
+                conn.execute(
+                    "UPDATE registration_codes SET used=1 WHERE code=?",
+                    (code,)
+                )
+                return None
+        except Exception:
+            return None
+        # Mark as used
+        conn.execute(
+            "UPDATE registration_codes SET used=1 WHERE code=?",
+            (code,)
+        )
+        return d
+
+
 def get_user_by_session(session_token: str) -> Optional[Dict[str, Any]]:
     if not session_token:
         return None
@@ -662,6 +799,80 @@ def create_email_user(email: str, password_hash: str, first_name: str = "",
             pass  # idempotent
     # Return the new user
     return get_user_by_email(email)
+
+
+def create_user_with_credentials(
+    username: str,
+    password_hash: str,
+    email: Optional[str] = None,
+    first_name: str = "",
+    auth_provider: str = "email",
+    telegram_user_id: Optional[int] = None,
+    telegram_chat_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Create a new user with a chosen username + password (the new unified
+    registration framework). Used by BOTH the email-registration flow and the
+    Telegram-registration flow.
+
+    - For email registration: pass email + username + password_hash.
+    - For Telegram registration: pass username + password_hash +
+      telegram_user_id + telegram_chat_id (+ optional email).
+
+    Returns the new user dict. Raises ValueError on conflict (duplicate
+    username or email).
+    """
+    clean_username = (username or "").strip().lstrip("@")
+    if not clean_username:
+        raise ValueError("Username is required")
+    if len(clean_username) < 3:
+        raise ValueError("Username must be at least 3 characters")
+    if len(clean_username) > 32:
+        raise ValueError("Username must be at most 32 characters")
+    if not all(c.isalnum() or c in "_." for c in clean_username):
+        raise ValueError("Username can only contain letters, numbers, underscores, and dots")
+    clean_username_lower = clean_username.lower()
+
+    # Check for duplicate username (case-insensitive)
+    if get_user_by_username(clean_username_lower):
+        raise ValueError("That username is already taken. Please choose another.")
+
+    # Check for duplicate email if provided
+    clean_email = ""
+    if email:
+        clean_email = email.strip().lower()
+        if get_user_by_email(clean_email):
+            raise ValueError("An account with this email already exists.")
+
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO users
+               (username, email, password_hash, auth_provider, first_name,
+                telegram_user_id, telegram_chat_id, created_at, last_login_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (clean_username_lower, clean_email or None, password_hash,
+             auth_provider, first_name or "",
+             telegram_user_id, telegram_chat_id,
+             now, now),
+        )
+        user_id = cur.lastrowid
+        # Create default user_settings row
+        try:
+            conn.execute(
+                """INSERT INTO user_settings
+                   (user_id, notify_telegram, notify_email, email, min_salary,
+                    max_commute_km, resume_path, email_digest)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id,
+                 1 if telegram_user_id else 0,
+                 1 if clean_email else 0,
+                 clean_email or "",
+                 0, 0, "", 0),
+            )
+        except Exception:
+            pass  # idempotent
+    # Fetch the new user
+    return get_user_by_username(clean_username_lower)
 
 
 def hash_password(password: str) -> str:

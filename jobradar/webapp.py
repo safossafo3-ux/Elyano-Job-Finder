@@ -57,9 +57,12 @@ from .database import (
     count_jobs_since,
     # Multi-auth: email/password + Google OAuth
     get_user_by_email, create_email_user, hash_password, verify_password,
+    # New unified registration framework (2026-07)
+    create_registration_code, peek_registration_code, consume_registration_code,
+    create_user_with_credentials,
 )
 from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline, run_scheduled_searches
-from .telegram_bot import send_text, send_login_code_to_user
+from .telegram_bot import send_text, send_login_code_to_user, send_registration_code_to_user
 from .rate_limit import RateLimitMiddleware
 from .email_notify import send_email, build_job_alert_html
 
@@ -351,30 +354,55 @@ async def api_register(req: RegisterRequest, response: Response):
 
 @app.post("/api/auth/login")
 async def api_login(req: LoginRequest, response: Response):
-    """Login with email + password. Sets session cookie on success."""
-    email = (req.email or "").strip().lower()
+    """Login with email OR username + password. Sets session cookie on success.
+
+    The 'email' field accepts either:
+    - An email address (e.g. 'mustafa@example.com')
+    - A username (e.g. 'mustafa' or '@mustafa')
+
+    This allows users who registered via Telegram (no email) to log in with
+    their chosen username + password.
+    """
+    identifier = (req.email or "").strip()
     password = req.password or ""
 
-    if not email or not password:
-        raise HTTPException(400, "Email and password are required.")
+    if not identifier or not password:
+        raise HTTPException(400, "Username/email and password are required.")
 
-    user = get_user_by_email(email)
+    # Look up the user by email first, then by username
+    user = None
+    if "@" in identifier:
+        # Treat as email
+        user = get_user_by_email(identifier.lower())
     if not user:
-        raise HTTPException(401, "Invalid email or password.")
+        # Try as username (strip leading @, lowercase)
+        clean_username = identifier.lstrip("@").lower()
+        user = get_user_by_username(clean_username)
+
+    if not user:
+        raise HTTPException(401, "Invalid username/email or password.")
     if not user.get("password_hash"):
-        # This account was created via Telegram or Google OAuth — no password.
-        raise HTTPException(401, "This account was created with Telegram or Google. Please use that sign-in method, or set a password from Settings.")
+        # This account was created via Telegram OAuth or Google OAuth without
+        # a password — they need to set one first via the registration flow.
+        provider = user.get("auth_provider") or "telegram"
+        raise HTTPException(
+            401,
+            f"This account doesn't have a password yet (created via {provider}). "
+            "Please register again to set a username and password."
+        )
 
     if not verify_password(password, user["password_hash"]):
-        raise HTTPException(401, "Invalid email or password.")
+        raise HTTPException(401, "Invalid username/email or password.")
 
     token = create_session_for_user(user["id"])
     _set_session_cookie(response, token)
-    log_activity(user["id"], "login", details={"auth_provider": "email"})
+    log_activity(user["id"], "login",
+                 details={"auth_provider": user.get("auth_provider") or "email"})
     return {
         "ok": True,
         "user_id": user["id"],
-        "email": user["email"],
+        "username": user.get("username"),
+        "email": user.get("email"),
         "first_name": user.get("first_name") or "",
         "auth_provider": user.get("auth_provider") or "email",
         "message": "Signed in successfully.",
@@ -382,7 +410,301 @@ async def api_login(req: LoginRequest, response: Response):
 
 
 # ---------------------------------------------------------------------------
-# Multi-auth: Google OAuth
+# New unified registration framework (2026-07)
+# ---------------------------------------------------------------------------
+# Two registration paths, both requiring a 6-digit verification code:
+#   1. Email: user enters email → backend emails code → user enters code →
+#      user picks username + password → account created.
+#   2. Telegram: user enters @username → bot DMs code → user enters code →
+#      user picks username + password → account created.
+#
+# After registration, the user logs in with their chosen username + password
+# via /api/auth/login (above). The email/Telegram becomes a verified contact
+# channel for notifications.
+
+class EmailCodeRequest(BaseModel):
+    email: str
+
+
+class EmailVerifyRequest(BaseModel):
+    email: str
+    code: str
+
+
+class TelegramVerifyRequest(BaseModel):
+    code: str
+
+
+class CreateAccountRequest(BaseModel):
+    code: str              # The 6-digit code (serves as registration token)
+    username: str
+    password: str
+    first_name: str = ""
+
+
+@app.post("/api/auth/email/request-code")
+async def api_email_request_code(req: EmailCodeRequest):
+    """Step 1 (email path): user enters their email → backend sends a 6-digit
+    code to that email. The code is valid for 10 minutes."""
+    email = (req.email or "").strip().lower()
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(400, "Please enter a valid email address.")
+    if len(email) > 254:
+        raise HTTPException(400, "Email is too long.")
+
+    # If an account already exists with this email, refuse (user should log in instead)
+    existing = get_user_by_email(email)
+    if existing and existing.get("password_hash"):
+        raise HTTPException(
+            409,
+            "An account with this email already exists. Try logging in instead."
+        )
+
+    # Issue the code
+    code = create_registration_code(method="email", identifier=email)
+
+    # Send the email
+    from .email_notify import build_login_code_email
+    html, text = build_login_code_email(code, username=email.split("@")[0])
+    sent_ok = send_email(
+        to_email=email,
+        subject="JobRadar — Your registration code",
+        html_body=html,
+        text_body=text,
+    )
+    if not sent_ok:
+        # SMTP not configured — return the code in the response so the user
+        # can still complete registration in dev/test environments. In
+        # production, SMTP should be configured and this branch won't fire.
+        logger.warning(f"SMTP send failed for {email}; returning code in response (dev mode)")
+        return {
+            "ok": True,
+            "message": "Email delivery is not configured on the server. "
+                       "Use the code below to complete registration (dev mode).",
+            "dev_code": code,
+            "email": email,
+        }
+
+    return {
+        "ok": True,
+        "message": f"A 6-digit code was sent to {email}. It expires in 10 minutes.",
+        "email": email,
+    }
+
+
+class TelegramCodeRequest(BaseModel):
+    username: str
+
+
+@app.post("/api/auth/telegram/request-code")
+async def api_telegram_request_code(req: TelegramCodeRequest):
+    """Step 1 (telegram path): user enters their Telegram username → bot DMs
+    them a 6-digit registration code. The user must have already sent /start
+    to the bot (otherwise we can't DM them)."""
+    username = (req.username or "").strip().lstrip("@")
+    if not username:
+        raise HTTPException(400, "Telegram username is required.")
+    if not all(c.isalnum() or c == "_" for c in username):
+        raise HTTPException(400, "Telegram usernames only contain letters, numbers, and underscores.")
+    if len(username) < 5 or len(username) > 32:
+        raise HTTPException(400, "Telegram usernames are 5–32 characters long.")
+
+    result = await send_registration_code_to_user(username)
+    if not result.get("ok"):
+        # If we have a deep link, return it as a structured response so the
+        # frontend can render an "Open bot in Telegram" button.
+        if result.get("needs_start"):
+            return JSONResponse(
+                status_code=200,  # 200, not 4xx — this is an expected flow
+                content={
+                    "ok": False,
+                    "needs_start": True,
+                    "deep_link": result["deep_link"],
+                    "bot_username": result["bot_username"],
+                    "message": result["error"],
+                },
+            )
+        # If the user is already registered, return a friendly hint
+        if result.get("already_registered"):
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "ok": False,
+                    "already_registered": True,
+                    "message": result["error"],
+                },
+            )
+        # Genuine error
+        raise HTTPException(400, result.get("error") or "Failed to send code.")
+    return {
+        "ok": True,
+        "message": f"Code sent to your Telegram chat (@{settings.TELEGRAM_BOT_USERNAME or 'our bot'}).",
+        "username": username,
+    }
+
+
+@app.post("/api/auth/email/verify-code")
+async def api_email_verify_code(req: EmailVerifyRequest):
+    """Step 2 (email path): user enters the code → backend verifies it WITHOUT
+    consuming it, so the user can still re-enter if they make a typo in the
+    next step. Returns a registration_token (= the same code) to pass to
+    /api/auth/create-account."""
+    email = (req.email or "").strip().lower()
+    code = (req.code or "").strip()
+    if not code or not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, "Code must be 6 digits.")
+    info = peek_registration_code(code)
+    if not info or info["method"] != "email" or info["identifier"] != email:
+        raise HTTPException(401, "Invalid or expired code. Please request a new one.")
+    return {
+        "ok": True,
+        "verified": True,
+        "method": "email",
+        "email": email,
+        "registration_token": code,  # Same as the code — pass to /create-account
+        "message": "Email verified! Now choose a username and password to finish.",
+    }
+
+
+@app.post("/api/auth/telegram/verify-code")
+async def api_telegram_verify_code(req: TelegramVerifyRequest, response: Response):
+    """Step 2 (telegram path): user enters the code → backend verifies it
+    WITHOUT consuming it. Returns a registration_token to pass to
+    /api/auth/create-account.
+
+    Note: This is DIFFERENT from the legacy /api/auth/verify-code endpoint,
+    which auto-creates a session for existing Telegram users. This new endpoint
+    is for NEW registrations and does NOT log the user in — they must finish
+    setting their username + password via /api/auth/create-account first.
+    """
+    code = (req.code or "").strip()
+    if not code or not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, "Code must be 6 digits.")
+    info = peek_registration_code(code)
+    if not info or info["method"] != "telegram":
+        raise HTTPException(401, "Invalid or expired code. Please request a new one.")
+
+    # Check if a user already exists with this Telegram user_id — if so,
+    # they should log in instead of re-registering.
+    existing_user = None
+    if info.get("telegram_user_id"):
+        from .database import get_user_by_telegram_id
+        existing_user = get_user_by_telegram_id(info["telegram_user_id"])
+    if existing_user and existing_user.get("password_hash"):
+        # Already registered — log them in directly
+        token = create_session_for_user(existing_user["id"])
+        _set_session_cookie(response, token)
+        log_activity(existing_user["id"], "login",
+                     details={"auth_provider": "telegram"})
+        return {
+            "ok": True,
+            "already_registered": True,
+            "username": existing_user.get("username"),
+            "first_name": existing_user.get("first_name") or "",
+            "message": "Welcome back! You're already registered.",
+        }
+
+    return {
+        "ok": True,
+        "verified": True,
+        "method": "telegram",
+        "telegram_username": info["identifier"],
+        "first_name": info.get("first_name") or "",
+        "registration_token": code,
+        "message": "Telegram verified! Now choose a username and password to finish.",
+    }
+
+
+@app.post("/api/auth/create-account")
+async def api_create_account(req: CreateAccountRequest, response: Response):
+    """Step 3 (final): user submits username + password + the registration
+    token (which is the same as the 6-digit code). Backend atomically
+    consumes the code and creates the user account with the chosen
+    credentials, then logs the user in."""
+    code = (req.code or "").strip()
+    username = (req.username or "").strip().lstrip("@")
+    password = req.password or ""
+    first_name = (req.first_name or "").strip()
+
+    # Validate code format
+    if not code or not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, "Invalid or missing registration code.")
+
+    # Validate username
+    if not username:
+        raise HTTPException(400, "Username is required.")
+    if len(username) < 3:
+        raise HTTPException(400, "Username must be at least 3 characters.")
+    if len(username) > 32:
+        raise HTTPException(400, "Username must be at most 32 characters.")
+    if not all(c.isalnum() or c in "_." for c in username):
+        raise HTTPException(400, "Username can only contain letters, numbers, underscores, and dots.")
+
+    # Validate password
+    if len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters.")
+    if len(password) > 128:
+        raise HTTPException(400, "Password is too long (max 128 characters).")
+
+    # Consume the registration code (atomic — marks as used)
+    info = consume_registration_code(code)
+    if not info:
+        raise HTTPException(
+            401,
+            "Invalid, expired, or already-used registration code. Please start again."
+        )
+
+    # Build the user record based on the registration method
+    try:
+        password_hash = hash_password(password)
+        if info["method"] == "email":
+            user = create_user_with_credentials(
+                username=username,
+                password_hash=password_hash,
+                email=info["identifier"],
+                first_name=first_name,
+                auth_provider="email",
+            )
+        elif info["method"] == "telegram":
+            user = create_user_with_credentials(
+                username=username,
+                password_hash=password_hash,
+                first_name=first_name or info.get("first_name") or "",
+                auth_provider="telegram",
+                telegram_user_id=info.get("telegram_user_id"),
+                telegram_chat_id=info.get("telegram_chat_id"),
+            )
+        else:
+            raise HTTPException(400, f"Unknown registration method: {info['method']}")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        logger.error(f"Account creation failed: {e}")
+        raise HTTPException(500, "Account creation failed. Please try again.")
+
+    if not user:
+        raise HTTPException(500, "Account creation failed — no user returned.")
+
+    # Log in the new user
+    token = create_session_for_user(user["id"])
+    _set_session_cookie(response, token)
+    log_activity(user["id"], "register",
+                 details={"auth_provider": info["method"], "username": username})
+    return {
+        "ok": True,
+        "user_id": user["id"],
+        "username": user.get("username"),
+        "email": user.get("email"),
+        "first_name": user.get("first_name") or "",
+        "auth_provider": info["method"],
+        "message": "Account created! You're now signed in.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Multi-auth: Google OAuth (legacy — kept for backward compat, but the new UI
+# uses the email+code flow instead, which doesn't require GOOGLE_OAUTH_* env
+# vars).
 # ---------------------------------------------------------------------------
 
 @app.get("/api/auth/google/start")

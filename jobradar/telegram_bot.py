@@ -24,6 +24,7 @@ from .config import settings
 from .database import (
     register_telegram_user, get_user_by_telegram_id,
     get_user_by_username, create_login_code,
+    create_registration_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -335,6 +336,97 @@ async def send_login_code_to_user(username: str) -> dict:
     if not sent:
         return {"ok": False, "error": "Failed to send code via Telegram. Try again in a moment."}
     return {"ok": True}
+
+
+async def send_registration_code_to_user(username: str) -> dict:
+    """Generate a 6-digit REGISTRATION code and send it to the user's Telegram
+    chat. This is for NEW user registration (the new unified framework).
+
+    Unlike send_login_code_to_user (which auto-logs-in existing users), this
+    function issues a code in the `registration_codes` table. The user must
+    then enter the code on the dashboard AND set a username + password to
+    finish creating their account.
+
+    Returns: {"ok": bool, "error": str?, "deep_link": str?, "bot_username": str?}
+    """
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return {"ok": False,
+                "error": "The Telegram bot is not configured on the server. "
+                         "Please contact the administrator."}
+
+    clean_username = (username or "").strip().lstrip("@").strip()
+    if not clean_username:
+        return {"ok": False, "error": "Please enter a valid Telegram username."}
+
+    bot_username = settings.TELEGRAM_BOT_USERNAME
+    if not bot_username:
+        return {"ok": False,
+                "error": "TELEGRAM_BOT_USERNAME is not configured on the server."}
+
+    # Look up the user — they must have sent /start to the bot first so we
+    # have their chat_id (Telegram doesn't allow bots to DM users who haven't
+    # initiated the conversation).
+    user = get_user_by_username(clean_username)
+    if not user:
+        deep_link = f"https://t.me/{bot_username}"
+        return {
+            "ok": False,
+            "needs_start": True,
+            "deep_link": deep_link,
+            "bot_username": bot_username,
+            "error": (
+                f"You haven't connected your Telegram to @{bot_username} yet. "
+                f"Tap the button below to open the bot in Telegram, then press "
+                f"Start. After that, come back here and click \"Send me a code\" again."
+            ),
+        }
+
+    chat_id = int(user.get("telegram_chat_id") or 0)
+    if not chat_id:
+        deep_link = f"https://t.me/{bot_username}"
+        return {
+            "ok": False,
+            "needs_start": True,
+            "deep_link": deep_link,
+            "bot_username": bot_username,
+            "error": "Your account is missing a chat_id. Tap the button below to refresh.",
+        }
+
+    # If this user already has a password, they're already registered — refuse
+    # to send a registration code (they should log in instead).
+    if user.get("password_hash"):
+        return {
+            "ok": False,
+            "already_registered": True,
+            "error": (
+                "You're already registered with this Telegram account. "
+                "Please sign in with your username and password instead."
+            ),
+        }
+
+    # Create the 6-digit REGISTRATION code (also expires old ones)
+    code = create_registration_code(
+        method="telegram",
+        identifier=clean_username.lower(),
+        telegram_user_id=int(user["telegram_user_id"]),
+        telegram_chat_id=chat_id,
+        first_name=user.get("first_name") or "",
+    )
+
+    display = f"@{user.get('username')}" if user.get("username") else (user.get("first_name") or "there")
+    msg = (
+        f"📝 <b>JobRadar Registration Code</b>\n\n"
+        f"Hi {display}, here is your one-time registration code:\n\n"
+        f"<code>{code}</code>\n\n"
+        f"⏱️ It expires in 10 minutes.\n"
+        f"Enter it on the dashboard, then choose a username and password to "
+        f"finish creating your account.\n\n"
+        f"If you didn't request this code, just ignore this message."
+    )
+    sent = await send_text(chat_id, msg)
+    if not sent:
+        return {"ok": False, "error": "Failed to send code via Telegram. Try again in a moment."}
+    return {"ok": True, "bot_username": bot_username}
 
 
 async def poll_updates():
