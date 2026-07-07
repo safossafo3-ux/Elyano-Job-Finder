@@ -16,10 +16,13 @@ from .config import settings
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_user_id INTEGER UNIQUE NOT NULL,
-    telegram_chat_id INTEGER NOT NULL,
+    telegram_user_id INTEGER UNIQUE,
+    telegram_chat_id INTEGER,
     username TEXT,
     first_name TEXT,
+    email TEXT UNIQUE,
+    password_hash TEXT,
+    auth_provider TEXT DEFAULT 'telegram',
     created_at TEXT NOT NULL,
     last_login_at TEXT
 );
@@ -197,7 +200,61 @@ MIGRATIONS = [
     "ALTER TABLE user_settings ADD COLUMN email_digest INTEGER DEFAULT 0",
     "ALTER TABLE saved_searches ADD COLUMN schedule_frequency TEXT DEFAULT 'off'",  # off | daily | weekly
     "ALTER TABLE saved_searches ADD COLUMN last_notified_at TEXT",
+    # Multi-auth: add email/password columns to users table
+    "ALTER TABLE users ADD COLUMN email TEXT",
+    "ALTER TABLE users ADD COLUMN password_hash TEXT",
+    "ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'telegram'",
+    "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
 ]
+
+
+def _migrate_users_table_drop_notnull(conn):
+    """SQLite cannot remove NOT NULL constraints via ALTER TABLE. To support
+    email-only users (who have no telegram_user_id), we rebuild the users
+    table with the new nullable schema and copy existing data over.
+
+    This is idempotent — if the table already has the new schema (nullable
+    telegram_user_id), it's a no-op.
+    """
+    try:
+        cur = conn.execute("PRAGMA table_info(users)")
+        cols = {row[1]: row for row in cur.fetchall()}
+        tg_col = cols.get("telegram_user_id")
+        if not tg_col:
+            return  # table doesn't exist yet (will be created by SCHEMA)
+        notnull = tg_col[3]  # 3 = notnull flag
+        if not notnull:
+            return  # already nullable, nothing to do
+
+        logger.info("Migrating users table: dropping NOT NULL on telegram_user_id/telegram_chat_id")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER UNIQUE,
+                telegram_chat_id INTEGER,
+                username TEXT,
+                first_name TEXT,
+                email TEXT UNIQUE,
+                password_hash TEXT,
+                auth_provider TEXT DEFAULT 'telegram',
+                created_at TEXT NOT NULL,
+                last_login_at TEXT
+            );
+            INSERT OR IGNORE INTO users_new
+                (id, telegram_user_id, telegram_chat_id, username, first_name,
+                 email, password_hash, auth_provider, created_at, last_login_at)
+            SELECT
+                id, telegram_user_id, telegram_chat_id, username, first_name,
+                NULL, NULL, 'telegram', created_at, last_login_at
+            FROM users;
+            DROP TABLE users;
+            ALTER TABLE users_new RENAME TO users;
+            CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+            CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        """)
+        logger.info("users table migration complete")
+    except Exception as e:
+        logger.warning(f"users table migration skipped: {e}")
 
 
 @contextmanager
@@ -214,6 +271,9 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        # Run the users-table migration first (drops NOT NULL on telegram_user_id)
+        # so the ALTER TABLE migrations below don't conflict.
+        _migrate_users_table_drop_notnull(conn)
         for stmt in MIGRATIONS:
             try:
                 conn.execute(stmt)
@@ -556,6 +616,80 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
             "SELECT * FROM users WHERE LOWER(username) = ?", (clean,)
         ).fetchone()
         return dict(row) if row else None
+
+
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Look up a user by email (case-insensitive). Returns the user dict or None."""
+    if not email:
+        return None
+    clean = email.strip().lower()
+    if not clean:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE LOWER(email) = ?", (clean,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def create_email_user(email: str, password_hash: str, first_name: str = "",
+                      auth_provider: str = "email") -> Dict[str, Any]:
+    """Create a new user with email + password (no Telegram required).
+    Returns the new user dict. Raises ValueError if the email is already
+    registered."""
+    if get_user_by_email(email):
+        raise ValueError("Email already registered")
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO users
+               (email, password_hash, auth_provider, first_name, created_at, last_login_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (email.strip().lower(), password_hash, auth_provider,
+             first_name or "", now, now),
+        )
+        user_id = cur.lastrowid
+        # Create default user_settings row
+        try:
+            conn.execute(
+                """INSERT INTO user_settings
+                   (user_id, notify_telegram, notify_email, email, min_salary,
+                    max_commute_km, resume_path, email_digest)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, 0, 0, email.strip().lower(), 0, 0, "", 0),
+            )
+        except Exception:
+            pass  # idempotent
+    # Return the new user
+    return get_user_by_email(email)
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt. Returns a UTF-8 string safe for DB storage."""
+    import bcrypt
+    if not password:
+        raise ValueError("Password cannot be empty")
+    if len(password) > 72:
+        # bcrypt truncates at 72 bytes; hash the SHA-256 of longer passwords
+        import hashlib
+        password = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify a password against a bcrypt hash. Returns True on match."""
+    if not password or not password_hash:
+        return False
+    try:
+        import bcrypt
+        if len(password) > 72:
+            import hashlib
+            password = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return bcrypt.checkpw(password.encode("utf-8"),
+                              password_hash.encode("utf-8"))
+    except Exception:
+        return False
 
 
 def create_session_for_user(user_id: int) -> str:

@@ -255,6 +255,89 @@
   }
   .code-input:focus { outline: none; border-color: #22d3ee; }
   .login-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+
+  /* Auth method tabs — Email / Gmail / Telegram */
+  .auth-tabs {
+    display: flex; gap: 4px; margin-bottom: 14px;
+    padding: 4px; background: rgba(0,0,0,0.3); border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .auth-tab {
+    flex: 1; padding: 10px 8px; border: none; background: transparent;
+    color: #94a3b8; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: 7px; transition: all 0.15s;
+  }
+  .auth-tab:hover { color: #cbd5e1; background: rgba(255,255,255,0.04); }
+  .auth-tab.active {
+    background: linear-gradient(135deg, #22d3ee, #2196f3);
+    color: #0a1628;
+  }
+
+  /* Mode toggle: Sign in / Register (email method only) */
+  .auth-mode-toggle {
+    display: flex; gap: 6px; margin-bottom: 14px; justify-content: center;
+  }
+  .auth-mode-btn {
+    padding: 6px 16px; border: 1px solid rgba(255,255,255,0.1);
+    background: transparent; color: #64748b; font-size: 12px; font-weight: 600;
+    cursor: pointer; border-radius: 6px; transition: all 0.15s;
+  }
+  .auth-mode-btn.active {
+    color: #22d3ee; border-color: #22d3ee; background: rgba(34,211,238,0.08);
+  }
+
+  .auth-panel { animation: fadeIn 0.2s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* Region countries modal — opens when a continent box is clicked */
+  .region-modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(5, 10, 20, 0.8);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 1100;  /* above login overlay */
+    padding: 16px;
+    overflow-y: auto;
+  }
+  .region-modal-overlay.show { display: flex; }
+  .region-modal {
+    width: 100%; max-width: 560px;
+    padding: 24px 22px;
+    text-align: center;
+    margin: auto;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-sizing: border-box;
+  }
+  .region-modal-header {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 16px; padding-bottom: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .region-modal-header .icon { font-size: 36px; }
+  .region-modal-header .title-block { flex: 1; text-align: left; }
+  .region-modal-header h3 {
+    font-size: 20px; margin: 0;
+    background: linear-gradient(135deg, #22d3ee, #818cf8);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .region-modal-header .sub { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .region-modal-close {
+    background: transparent; border: none; color: #64748b;
+    font-size: 24px; cursor: pointer; padding: 4px 8px; line-height: 1;
+  }
+  .region-modal-close:hover { color: #f1f5f9; }
+  .region-modal .select-all-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+  }
+  .region-modal .country-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 6px; max-height: 50vh; overflow-y: auto; padding-right: 4px;
+  }
+
   .login-back-btn {
     background: transparent;
     border: 1px solid rgba(255,255,255,0.1);
@@ -692,109 +775,185 @@
 <!-- ============== LOGIN OVERLAY ============== -->
 <div class="login-overlay" id="loginOverlay" style="display:none;">
   <div class="login-card glass">
-    <!-- Step 1: enter username -->
-    <div id="loginStep1">
-      <h2>🔐 Sign in with Telegram</h2>
-      <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
+    <!-- Auth method tabs -->
+    <div class="auth-tabs" id="authTabs">
+      <button class="auth-tab active" data-method="credentials" onclick="switchAuthMethod('credentials')">📧 Email</button>
+      <button class="auth-tab" data-method="google" onclick="switchAuthMethod('google')">🌐 Gmail</button>
+      <button class="auth-tab" data-method="telegram" onclick="switchAuthMethod('telegram')">💬 Telegram</button>
+    </div>
 
-      {% if telegram_bot_username %}
-      <!-- HERO BOT BUTTON — uses tg://search?query=%40<bot>%20 deep-link.
+    <!-- Mode toggle: Sign in / Register (only for credentials method) -->
+    <div class="auth-mode-toggle" id="authModeToggle">
+      <button class="auth-mode-btn active" id="modeLoginBtn" onclick="setAuthMode('login')">Sign in</button>
+      <button class="auth-mode-btn" id="modeRegisterBtn" onclick="setAuthMode('register')">Register</button>
+    </div>
 
-           WHY THE TRAILING %20 (space): Telegram's mobile clients inspect the
-           query and, if it EXACTLY matches an @<username> pattern, they
-           auto-resolve it and jump straight into the bot's chat (showing the
-           bot's display name like "Elyano Job Finder" as the chat title),
-           completely bypassing the search bar. By appending a trailing space
-           to the query, the text no longer matches a clean username pattern,
-           so Telegram keeps the literal "@europaelyano_bot" text inside the
-           search bar (the trailing space is trimmed for display). This is the
-           only reliable way to force the @ handle to appear in the search bar.
+    <!-- ============ CREDENTIALS (email + password) ============ -->
+    <div id="authCredentials" class="auth-panel">
+      <h2 id="credentialsTitle">🔐 Sign in</h2>
+      <p id="credentialsSubtitle">Enter your email and password to continue.</p>
 
-           The handle is ALSO copied to the clipboard in openTelegramApp() so
-           the user can paste it manually if their Telegram client still
-           misbehaves. -->
-      <a class="bot-hero" id="botHeroBtn"
-         href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
-         onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');">
-        <span class="bot-emoji">💬</span>
-        Open <b>@{{ telegram_bot_username }}</b> in Telegram
-        <span class="bot-arrow">→</span>
-      </a>
-      <div class="bot-hero-sub">
-        Tap the button → it opens the Telegram <b>app</b> with <code>@{{ telegram_bot_username | lower }}</code> written in the search bar (no spaces) → tap the bot in the results → press <b>Start</b>. The handle is also auto-copied to your clipboard — paste it into Telegram's search if needed.
-      </div>
-      <!-- Manual search fallback — if the deep-link doesn't pre-fill the
-           search bar on the user's device, they can copy this exact handle
-           and paste it into Telegram's search bar manually. -->
-      <div class="bot-manual-search">
-        <span class="bot-manual-label">If the search bar isn't pre-filled, copy this exact handle:</span>
-        <div class="bot-manual-handle-row">
-          <code class="bot-manual-handle" id="botHandleText">@{{ telegram_bot_username | lower }}</code>
-          <button type="button" class="bot-copy-btn" id="botCopyBtn"
-                  onclick="copyBotHandle('{{ telegram_bot_username | lower }}')">Copy</button>
-        </div>
-        <span class="bot-manual-hint">Open Telegram → tap the magnifying glass 🔍 → paste <code>@{{ telegram_bot_username | lower }}</code> (no spaces) → tap the bot → press <b>Start</b>.</span>
-      </div>
-      {% else %}
-      <p style="color:#f87171; font-size:12px;">
-        ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set on the server. Set it so the login link works.
-      </p>
-      {% endif %}
+      <input type="text" class="username-input" id="emailInput"
+             placeholder="your@email.com"
+             autocomplete="email" autocapitalize="none" spellcheck="false"
+             style="margin-bottom:10px;">
 
-      <div class="login-steps">
-        <ol>
-          <li>Tap <b>"Open @{{ telegram_bot_username or 'bot' }} in Telegram"</b> above</li>
-          <li>Press <b>Start</b> in Telegram (this registers you)</li>
-          <li>Come back here and type your <b>Telegram username</b></li>
-          <li>Tap <b>"Send me a code"</b> — the bot DMs you a 6-digit code</li>
-          <li>Type the code here to sign in ✓</li>
-        </ol>
-      </div>
+      <input type="password" class="username-input" id="passwordInput"
+             placeholder="password (min 6 characters)"
+             autocomplete="current-password"
+             style="margin-bottom:6px;">
 
-      <input type="text" class="username-input" id="usernameInput"
-             placeholder="your Telegram username (no @)"
-             autocomplete="username" autocapitalize="none" spellcheck="false">
+      <input type="text" class="username-input" id="firstNameInput"
+             placeholder="your name (optional, for registration)"
+             autocomplete="name"
+             style="margin-bottom:6px; display:none;">
 
       <div class="login-actions">
-        <button class="primary" id="requestCodeBtn" onclick="requestCode()">Send me a code →</button>
+        <button class="primary" id="credentialsSubmitBtn" onclick="submitCredentials()">Sign in →</button>
       </div>
-
-      <!-- Deep-link panel — shown if the user hasn't /start-ed the bot yet -->
-      <div id="loginNeedsStart" style="display:none; margin-top:18px; padding:14px; background:rgba(34,211,238,0.08); border:1px solid rgba(34,211,238,0.3); border-radius:10px;">
-        <div style="color:#22d3ee; font-size:14px; font-weight:600; margin-bottom:6px;">👋 First-time here?</div>
-        <p style="color:#cbd5e1; font-size:13px; line-height:1.5; margin-bottom:10px;">
-          You need to open the bot once in Telegram and press <b>Start</b> so it can send you messages.
-          Tap the button below to open the bot in Telegram.
-        </p>
-        <a class="bot-link" id="deepLinkBtn"
-           href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
-           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
-           style="display:block;">
-          💬 Open @{{ telegram_bot_username }} in Telegram
-        </a>
-        <p style="margin-top:10px; font-size:11px; color:#64748b;">
-          After pressing <b>Start</b> in Telegram, come back here and click "Send me a code" again — your
-          code will arrive in Telegram in seconds.
-        </p>
-      </div>
-      <p style="margin-top:14px; font-size:11px; color:#64748b;">
-        💡 Tip: your Telegram username is in <b>Settings → Username</b> in the Telegram app. No <code>@</code> needed.
+      <p style="margin-top:12px; font-size:11px; color:#64748b;" id="credentialsHint">
+        New here? Tap <b>Register</b> above to create an account with email + password.
       </p>
     </div>
 
-    <!-- Step 2: enter code -->
-    <div id="loginStep2" style="display:none;">
-      <h2>📲 Enter your code</h2>
-      <p id="codeSentMsg">A 6-digit code was sent to your Telegram chat.</p>
-      <input type="text" class="code-input" id="codeInput" placeholder="••••••" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
-      <div class="login-actions">
-        <button class="login-back-btn" onclick="backToStep1()">← Back</button>
-        <button class="primary" id="verifyCodeBtn" onclick="verifyCode()">Verify &amp; sign in ✓</button>
+    <!-- ============ GOOGLE (Gmail OAuth) ============ -->
+    <div id="authGoogle" class="auth-panel" style="display:none;">
+      <h2>🌐 Sign in with Gmail</h2>
+      <p>Use your Google account to sign in. No password needed — Google handles the security.</p>
+      {% if google_oauth_enabled %}
+      <div class="login-actions" style="margin-top:18px;">
+        <button class="bot-hero" style="margin:0; padding:14px 22px; border:none; cursor:pointer; font-size:15px;"
+                onclick="window.location.href='/api/auth/google/start';">
+          <span class="bot-emoji">🌐</span>
+          Continue with Google
+          <span class="bot-arrow">→</span>
+        </button>
       </div>
       <p style="margin-top:14px; font-size:11px; color:#64748b;">
-        ⏱️ Code expires in 10 minutes.
-        <a href="#" onclick="requestCode(); return false;" style="color:#22d3ee; margin-left:8px;">Resend code</a>
+        You'll be redirected to Google to sign in, then back to JobRadar.
       </p>
+      {% else %}
+      <div style="margin-top:18px; padding:14px; background:rgba(248,113,113,0.08); border:1px solid rgba(248,113,113,0.3); border-radius:10px; color:#f87171; font-size:13px;">
+        ⚠️ Google sign-in is not configured on the server yet. The admin needs to set
+        <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code> environment variables.
+        Meanwhile, you can use <b>Email</b> or <b>Telegram</b> to sign in.
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- ============ TELEGRAM (existing flow) ============ -->
+    <div id="authTelegram" class="auth-panel" style="display:none;">
+      <div id="loginStep1">
+        <h2>🔐 Sign in with Telegram</h2>
+        <p>JobRadar sends you job alerts straight to your Telegram chat. Sign in once to get started.</p>
+
+        {% if telegram_bot_username %}
+        <a class="bot-hero" id="botHeroBtn"
+           href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
+           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');">
+          <span class="bot-emoji">💬</span>
+          Open <b>@{{ telegram_bot_username }}</b> in Telegram
+          <span class="bot-arrow">→</span>
+        </a>
+        <div class="bot-hero-sub">
+          Tap the button → it opens the Telegram <b>app</b> with <code>@{{ telegram_bot_username | lower }}</code> written in the search bar (no spaces) → tap the bot in the results → press <b>Start</b>. The handle is also auto-copied to your clipboard — paste it into Telegram's search if needed.
+        </div>
+        <div class="bot-manual-search">
+          <span class="bot-manual-label">If the search bar isn't pre-filled, copy this exact handle:</span>
+          <div class="bot-manual-handle-row">
+            <code class="bot-manual-handle" id="botHandleText">@{{ telegram_bot_username | lower }}</code>
+            <button type="button" class="bot-copy-btn" id="botCopyBtn"
+                    onclick="copyBotHandle('{{ telegram_bot_username | lower }}')">Copy</button>
+          </div>
+          <span class="bot-manual-hint">Open Telegram → tap the magnifying glass 🔍 → paste <code>@{{ telegram_bot_username | lower }}</code> (no spaces) → tap the bot → press <b>Start</b>.</span>
+        </div>
+        {% else %}
+        <p style="color:#f87171; font-size:12px;">
+          ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set on the server. Set it so the login link works.
+        </p>
+        {% endif %}
+
+        <div class="login-steps">
+          <ol>
+            <li>Tap <b>"Open @{{ telegram_bot_username or 'bot' }} in Telegram"</b> above</li>
+            <li>Press <b>Start</b> in Telegram (this registers you)</li>
+            <li>Come back here and type your <b>Telegram username</b></li>
+            <li>Tap <b>"Send me a code"</b> — the bot DMs you a 6-digit code</li>
+            <li>Type the code here to sign in ✓</li>
+          </ol>
+        </div>
+
+        <input type="text" class="username-input" id="usernameInput"
+               placeholder="your Telegram username (no @)"
+               autocomplete="username" autocapitalize="none" spellcheck="false">
+
+        <div class="login-actions">
+          <button class="primary" id="requestCodeBtn" onclick="requestCode()">Send me a code →</button>
+        </div>
+
+        <div id="loginNeedsStart" style="display:none; margin-top:18px; padding:14px; background:rgba(34,211,238,0.08); border:1px solid rgba(34,211,238,0.3); border-radius:10px;">
+          <div style="color:#22d3ee; font-size:14px; font-weight:600; margin-bottom:6px;">👋 First-time here?</div>
+          <p style="color:#cbd5e1; font-size:13px; line-height:1.5; margin-bottom:10px;">
+            You need to open the bot once in Telegram and press <b>Start</b> so it can send you messages.
+            Tap the button below to open the bot in Telegram.
+          </p>
+          <a class="bot-link" id="deepLinkBtn"
+             href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
+             onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
+             style="display:block;">
+            💬 Open @{{ telegram_bot_username }} in Telegram
+          </a>
+          <p style="margin-top:10px; font-size:11px; color:#64748b;">
+            After pressing <b>Start</b> in Telegram, come back here and click "Send me a code" again — your
+            code will arrive in Telegram in seconds.
+          </p>
+        </div>
+        <p style="margin-top:14px; font-size:11px; color:#64748b;">
+          💡 Tip: your Telegram username is in <b>Settings → Username</b> in the Telegram app. No <code>@</code> needed.
+        </p>
+      </div>
+
+      <!-- Step 2: enter code -->
+      <div id="loginStep2" style="display:none;">
+        <h2>📲 Enter your code</h2>
+        <p id="codeSentMsg">A 6-digit code was sent to your Telegram chat.</p>
+        <input type="text" class="code-input" id="codeInput" placeholder="••••••" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+        <div class="login-actions">
+          <button class="login-back-btn" onclick="backToStep1()">← Back</button>
+          <button class="primary" id="verifyCodeBtn" onclick="verifyCode()">Verify &amp; sign in ✓</button>
+        </div>
+        <p style="margin-top:14px; font-size:11px; color:#64748b;">
+          ⏱️ Code expires in 10 minutes.
+          <a href="#" onclick="requestCode(); return false;" style="color:#22d3ee; margin-left:8px;">Resend code</a>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============== REGION COUNTRIES MODAL ============== -->
+<!-- Opens when a continent box is clicked. Shows the countries in that
+     region so the user can pick them directly without leaving the page. -->
+<div class="region-modal-overlay" id="regionModalOverlay" onclick="if(event.target===this) closeRegionModal();">
+  <div class="region-modal glass">
+    <div class="region-modal-header">
+      <div class="icon" id="regionModalIcon">🌍</div>
+      <div class="title-block">
+        <h3 id="regionModalTitle">Region</h3>
+        <div class="sub" id="regionModalSub">0 countries available</div>
+      </div>
+      <button class="region-modal-close" onclick="closeRegionModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="select-all-bar">
+      <div>
+        <button class="ghost" onclick="selectAllInModal(true)">✓ Select all</button>
+        <button class="ghost" onclick="selectAllInModal(false)" style="margin-left:8px;">✗ Clear</button>
+      </div>
+      <div class="selected-count" id="regionModalCount">0 selected</div>
+    </div>
+    <div class="country-grid" id="regionModalGrid"></div>
+    <div class="login-actions" style="margin-top:18px;">
+      <button class="primary" onclick="confirmRegionModal()">Done ✓</button>
     </div>
   </div>
 </div>
@@ -1148,14 +1307,36 @@ async function init() {
   state.botUsername = "{{ telegram_bot_username }}";
   {% endif %}
 
+  // Handle Google OAuth redirect params (?login_success=1 or ?login_error=...)
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('login_success')) {
+    showToast('✅ Signed in with Google successfully!', 'success');
+    // Clean the URL
+    window.history.replaceState({}, document.title, window.location.pathname);
+  } else if (urlParams.get('login_error')) {
+    const err = urlParams.get('login_error');
+    let msg = 'Google sign-in failed';
+    if (err === 'access_denied') msg = 'You cancelled the Google sign-in';
+    else if (err === 'google_not_configured') msg = 'Google sign-in is not configured on the server';
+    else if (err === 'oauth_failed') msg = 'Google authentication failed — please try again';
+    else if (err === 'no_email') msg = 'Google did not return an email address';
+    else if (err === 'no_public_url') msg = 'Server misconfigured: WEBAPP_PUBLIC_URL is not set';
+    showToast(msg, true);
+    // Clean the URL
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
+
   // Load user
   try {
     const r = await fetch('/api/me');
     const d = await r.json();
     if (d.authenticated) {
       state.user = d;
+      // Display email (for email/Google users) or username (for Telegram users)
+      const displayName = d.email || d.username || d.first_name || 'User';
+      const providerTag = d.auth_provider === 'google' ? '🌐' : (d.auth_provider === 'email' ? '📧' : '💬');
       document.getElementById('userBadgeText').innerHTML =
-        `👤 <b>${d.username || d.first_name || 'User'}</b> · <a href="#" onclick="logout(); return false;" style="color:#22d3ee; margin-left:8px;">logout</a>`;
+        `${providerTag} <b>${displayName}</b> · <a href="#" onclick="logout(); return false;" style="color:#22d3ee; margin-left:8px;">logout</a>`;
       // Show Phase 2/3 tabs now that user is logged in
       document.getElementById('phase2Tabs').style.display = 'flex';
       // Show the Export CSV button
@@ -1188,10 +1369,119 @@ async function init() {
 
 function showLogin() {
   document.getElementById('loginOverlay').style.display = 'flex';
-  // Reset to step 1
-  document.getElementById('loginStep1').style.display = 'block';
-  document.getElementById('loginStep2').style.display = 'none';
-  setTimeout(() => document.getElementById('usernameInput').focus(), 100);
+  // Default to credentials tab, login mode
+  switchAuthMethod('credentials');
+  setAuthMode('login');
+  // Reset Telegram step 1 if it was on step 2
+  const step1 = document.getElementById('loginStep1');
+  const step2 = document.getElementById('loginStep2');
+  if (step1) step1.style.display = 'block';
+  if (step2) step2.style.display = 'none';
+  setTimeout(() => {
+    const emailInput = document.getElementById('emailInput');
+    if (emailInput) emailInput.focus();
+  }, 100);
+}
+
+// ============================================================
+// Multi-auth: switch between Email / Gmail / Telegram tabs
+// ============================================================
+let _authMode = 'login';  // 'login' or 'register'
+
+function switchAuthMethod(method) {
+  // Update tab buttons
+  document.querySelectorAll('.auth-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.method === method);
+  });
+  // Show/hide panels
+  document.getElementById('authCredentials').style.display = method === 'credentials' ? 'block' : 'none';
+  document.getElementById('authGoogle').style.display = method === 'google' ? 'block' : 'none';
+  document.getElementById('authTelegram').style.display = method === 'telegram' ? 'block' : 'none';
+  // Show/hide the Sign in / Register toggle (only for credentials)
+  document.getElementById('authModeToggle').style.display = method === 'credentials' ? 'flex' : 'none';
+  // Focus the first input
+  setTimeout(() => {
+    if (method === 'credentials') {
+      const el = document.getElementById('emailInput');
+      if (el) el.focus();
+    } else if (method === 'telegram') {
+      const el = document.getElementById('usernameInput');
+      if (el) el.focus();
+    }
+  }, 100);
+}
+
+function setAuthMode(mode) {
+  _authMode = mode;
+  document.getElementById('modeLoginBtn').classList.toggle('active', mode === 'login');
+  document.getElementById('modeRegisterBtn').classList.toggle('active', mode === 'register');
+  // Update titles and button labels
+  const title = document.getElementById('credentialsTitle');
+  const subtitle = document.getElementById('credentialsSubtitle');
+  const submitBtn = document.getElementById('credentialsSubmitBtn');
+  const hint = document.getElementById('credentialsHint');
+  const firstNameInput = document.getElementById('firstNameInput');
+  const passwordInput = document.getElementById('passwordInput');
+  if (mode === 'register') {
+    if (title) title.textContent = '📝 Create your account';
+    if (subtitle) subtitle.textContent = 'Register with your email and a password. You can also link Telegram later from Settings.';
+    if (submitBtn) submitBtn.textContent = 'Create account →';
+    if (hint) hint.innerHTML = 'Already have an account? Tap <b>Sign in</b> above.';
+    if (firstNameInput) firstNameInput.style.display = 'block';
+    if (passwordInput) passwordInput.placeholder = 'choose a password (min 6 characters)';
+  } else {
+    if (title) title.textContent = '🔐 Sign in';
+    if (subtitle) subtitle.textContent = 'Enter your email and password to continue.';
+    if (submitBtn) submitBtn.textContent = 'Sign in →';
+    if (hint) hint.innerHTML = 'New here? Tap <b>Register</b> above to create an account with email + password.';
+    if (firstNameInput) firstNameInput.style.display = 'none';
+    if (passwordInput) passwordInput.placeholder = 'password (min 6 characters)';
+  }
+}
+
+// ============================================================
+// Submit credentials (register or login)
+// ============================================================
+async function submitCredentials() {
+  const email = (document.getElementById('emailInput').value || '').trim().toLowerCase();
+  const password = document.getElementById('passwordInput').value || '';
+  const firstName = (document.getElementById('firstNameInput').value || '').trim();
+  const btn = document.getElementById('credentialsSubmitBtn');
+
+  if (!email) { showToast('Enter your email address', true); return; }
+  if (!email.includes('@') || !email.split('@').pop().includes('.')) {
+    showToast('Please enter a valid email address', true); return;
+  }
+  if (!password) { showToast('Enter your password', true); return; }
+  if (_authMode === 'register' && password.length < 6) {
+    showToast('Password must be at least 6 characters', true); return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = _authMode === 'register' ? 'Creating…' : 'Signing in…';
+  try {
+    const endpoint = _authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
+    const body = _authMode === 'register'
+      ? { email, password, first_name: firstName }
+      : { email, password };
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      showToast(data.detail || 'Authentication failed', true);
+      return;
+    }
+    showToast(data.message || 'Signed in successfully', 'success');
+    await refreshUser();
+  } catch (e) {
+    showToast('Network error — please try again', true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = _authMode === 'register' ? 'Create account →' : 'Sign in →';
+  }
 }
 
 // Step 1: user submits username → backend asks bot to send a 6-digit code
@@ -1678,7 +1968,7 @@ function renderStep() {
 function renderRegions() {
   const grid = document.getElementById('regionGrid');
   grid.innerHTML = state.regions.map(r => `
-    <div class="region-card glass" data-code="${r.code}" onclick="toggleRegion('${r.code}')">
+    <div class="region-card glass" data-code="${r.code}" onclick="openRegionModal('${r.code}')">
       <div class="icon">${r.icon}</div>
       <div class="name">${r.name}</div>
       <div class="count">${r.countries.length} countries</div>
@@ -1687,6 +1977,7 @@ function renderRegions() {
 }
 
 function toggleRegion(code) {
+  // Kept for backward compat — but openRegionModal is now the primary action.
   if (state.selectedRegions.has(code)) {
     state.selectedRegions.delete(code);
   } else {
@@ -1695,6 +1986,90 @@ function toggleRegion(code) {
   document.querySelectorAll('.region-card').forEach(c => {
     c.classList.toggle('selected', state.selectedRegions.has(c.dataset.code));
   });
+}
+
+// ============================================================
+// Region modal — opens a window with the listed countries for a region
+// ============================================================
+let _currentModalRegion = null;
+
+function openRegionModal(regionCode) {
+  const region = state.regions.find(r => r.code === regionCode);
+  if (!region) return;
+  _currentModalRegion = regionCode;
+  // Mark the region as selected (so the wizard knows to include it)
+  state.selectedRegions.add(regionCode);
+  document.querySelectorAll('.region-card').forEach(c => {
+    c.classList.toggle('selected', state.selectedRegions.has(c.dataset.code));
+  });
+  // Populate the modal
+  document.getElementById('regionModalIcon').textContent = region.icon;
+  document.getElementById('regionModalTitle').textContent = region.name;
+  document.getElementById('regionModalSub').textContent =
+    `${region.countries.length} countries available — tap to select`;
+  // Render the country grid for this region only
+  const grid = document.getElementById('regionModalGrid');
+  grid.innerHTML = region.countries.map(c => `
+    <label class="country-item">
+      <input type="checkbox" data-code="${c.code}" ${state.selectedCountries.has(c.code) ? 'checked' : ''}
+             onchange="toggleCountryInModal('${c.code}', this.checked)">
+      <span class="name">${c.name}</span>
+      <span class="dial">${c.dial_code}</span>
+    </label>
+  `).join('');
+  updateRegionModalCount();
+  // Show the modal
+  document.getElementById('regionModalOverlay').classList.add('show');
+}
+
+function closeRegionModal() {
+  document.getElementById('regionModalOverlay').classList.remove('show');
+  _currentModalRegion = null;
+  // Refresh the main country grid so the wizard step 2 stays in sync
+  renderCountries();
+}
+
+function toggleCountryInModal(code, checked) {
+  if (checked) state.selectedCountries.add(code);
+  else state.selectedCountries.delete(code);
+  updateRegionModalCount();
+}
+
+function selectAllInModal(checked) {
+  document.querySelectorAll('#regionModalGrid input[type=checkbox]').forEach(cb => {
+    cb.checked = checked;
+    const code = cb.dataset.code;
+    if (checked) state.selectedCountries.add(code);
+    else state.selectedCountries.delete(code);
+  });
+  updateRegionModalCount();
+}
+
+function updateRegionModalCount() {
+  const checked = document.querySelectorAll('#regionModalGrid input[type=checkbox]:checked').length;
+  const total = document.querySelectorAll('#regionModalGrid input[type=checkbox]').length;
+  document.getElementById('regionModalCount').textContent =
+    `${checked} of ${total} selected`;
+}
+
+function confirmRegionModal() {
+  // Check if at least one country is selected; if so, keep the region selected.
+  // If none are selected, deselect the region too (user opened modal but picked nothing).
+  const region = state.regions.find(r => r.code === _currentModalRegion);
+  if (region) {
+    const anySelected = region.countries.some(c => state.selectedCountries.has(c.code));
+    if (!anySelected) {
+      state.selectedRegions.delete(_currentModalRegion);
+      document.querySelectorAll('.region-card').forEach(c => {
+        c.classList.toggle('selected', state.selectedRegions.has(c.dataset.code));
+      });
+    }
+  }
+  closeRegionModal();
+  const selectedCount = state.selectedCountries.size;
+  if (selectedCount > 0) {
+    showToast(`✓ Selected ${selectedCount} ${selectedCount === 1 ? 'country' : 'countries'} so far`, 'success');
+  }
 }
 
 function renderCountries() {

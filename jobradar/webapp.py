@@ -55,6 +55,8 @@ from .database import (
     set_resume_path, list_scan_log,
     # Phase 4: live scan status
     count_jobs_since,
+    # Multi-auth: email/password + Google OAuth
+    get_user_by_email, create_email_user, hash_password, verify_password,
 )
 from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline, run_scheduled_searches
 from .telegram_bot import send_text, send_login_code_to_user
@@ -159,6 +161,10 @@ async def dashboard(request: Request):
     init_db()
     user = await get_current_user(request)
     stats = count_jobs()
+    # Admin check: support both telegram username and email
+    user_identifier = ""
+    if user:
+        user_identifier = user.get("email") or user.get("username") or ""
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -168,9 +174,11 @@ async def dashboard(request: Request):
             "categories": CATEGORIES,
             "stats": stats,
             "user": user,
-            "is_admin": bool(user and is_admin(user.get("username") or "")),
+            "is_admin": bool(user and is_admin(user_identifier)),
             "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME,
             "webapp_public_url": settings.WEBAPP_PUBLIC_URL,
+            "google_oauth_client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
+            "google_oauth_enabled": bool(settings.GOOGLE_OAUTH_CLIENT_ID and settings.GOOGLE_OAUTH_CLIENT_SECRET),
         },
     )
 
@@ -265,14 +273,214 @@ async def api_me(request: Request):
     user = await get_current_user(request)
     if not user:
         return {"authenticated": False}
+    user_identifier = user.get("email") or user.get("username") or ""
     return {
         "authenticated": True,
         "user_id": user.get("id"),
         "username": user.get("username"),
+        "email": user.get("email"),
         "first_name": user.get("first_name"),
+        "auth_provider": user.get("auth_provider", "telegram"),
         "telegram_chat_id": user.get("telegram_chat_id"),
-        "is_admin": is_admin(user.get("username") or ""),
+        "is_admin": is_admin(user_identifier),
     }
+
+
+# ---------------------------------------------------------------------------
+# Multi-auth: email/password registration + login
+# ---------------------------------------------------------------------------
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    first_name: str = ""
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/register")
+async def api_register(req: RegisterRequest, response: Response):
+    """Register a new user with email + password. Creates the account and
+    immediately logs the user in (sets session cookie)."""
+    email = (req.email or "").strip().lower()
+    password = req.password or ""
+    first_name = (req.first_name or "").strip()
+
+    # Validate email
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(400, "Please enter a valid email address.")
+    if len(email) > 254:
+        raise HTTPException(400, "Email is too long.")
+
+    # Validate password
+    if len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters.")
+    if len(password) > 128:
+        raise HTTPException(400, "Password is too long (max 128 characters).")
+
+    # Check if email is already registered
+    if get_user_by_email(email):
+        raise HTTPException(409, "An account with this email already exists. Try logging in instead.")
+
+    # Create the user
+    try:
+        password_hash = hash_password(password)
+        user = create_email_user(email, password_hash, first_name=first_name, auth_provider="email")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        logger.error(f"Registration failed for {email}: {e}")
+        raise HTTPException(500, "Registration failed. Please try again.")
+
+    # Create session
+    token = create_session_for_user(user["id"])
+    _set_session_cookie(response, token)
+    log_activity(user["id"], "register", details={"email": email, "auth_provider": "email"})
+    return {
+        "ok": True,
+        "user_id": user["id"],
+        "email": user["email"],
+        "first_name": user.get("first_name") or "",
+        "auth_provider": "email",
+        "message": "Account created! You're now signed in.",
+    }
+
+
+@app.post("/api/auth/login")
+async def api_login(req: LoginRequest, response: Response):
+    """Login with email + password. Sets session cookie on success."""
+    email = (req.email or "").strip().lower()
+    password = req.password or ""
+
+    if not email or not password:
+        raise HTTPException(400, "Email and password are required.")
+
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(401, "Invalid email or password.")
+    if not user.get("password_hash"):
+        # This account was created via Telegram or Google OAuth — no password.
+        raise HTTPException(401, "This account was created with Telegram or Google. Please use that sign-in method, or set a password from Settings.")
+
+    if not verify_password(password, user["password_hash"]):
+        raise HTTPException(401, "Invalid email or password.")
+
+    token = create_session_for_user(user["id"])
+    _set_session_cookie(response, token)
+    log_activity(user["id"], "login", details={"auth_provider": "email"})
+    return {
+        "ok": True,
+        "user_id": user["id"],
+        "email": user["email"],
+        "first_name": user.get("first_name") or "",
+        "auth_provider": user.get("auth_provider") or "email",
+        "message": "Signed in successfully.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Multi-auth: Google OAuth
+# ---------------------------------------------------------------------------
+
+@app.get("/api/auth/google/start")
+async def api_google_start(request: Request):
+    """Redirect to Google's OAuth consent screen. Requires GOOGLE_OAUTH_CLIENT_ID."""
+    if not settings.GOOGLE_OAUTH_CLIENT_ID:
+        raise HTTPException(503, "Google OAuth is not configured on the server. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.")
+
+    # Build the redirect URI: prefer env var, else derive from WEBAPP_PUBLIC_URL
+    redirect_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
+    if not redirect_uri:
+        if not settings.WEBAPP_PUBLIC_URL:
+            raise HTTPException(500, "WEBAPP_PUBLIC_URL is not set — cannot build Google OAuth redirect URI.")
+        redirect_uri = settings.WEBAPP_PUBLIC_URL.rstrip("/") + "/api/auth/google/callback"
+
+    # Build the Google OAuth URL
+    from urllib.parse import urlencode
+    params = {
+        "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/api/auth/google/callback")
+async def api_google_callback(request: Request, response: Response, code: str = "", error: str = ""):
+    """Handle the Google OAuth callback. Exchanges the code for user info,
+    creates or looks up the user, sets session cookie, redirects to dashboard."""
+    if error:
+        return RedirectResponse(url=f"/?login_error={error}", status_code=302)
+    if not code:
+        return RedirectResponse(url="/?login_error=no_code", status_code=302)
+
+    if not settings.GOOGLE_OAUTH_CLIENT_ID or not settings.GOOGLE_OAUTH_CLIENT_SECRET:
+        return RedirectResponse(url="/?login_error=google_not_configured", status_code=302)
+
+    redirect_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
+    if not redirect_uri:
+        if not settings.WEBAPP_PUBLIC_URL:
+            return RedirectResponse(url="/?login_error=no_public_url", status_code=302)
+        redirect_uri = settings.WEBAPP_PUBLIC_URL.rstrip("/") + "/api/auth/google/callback"
+
+    # Exchange the code for an access token
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
+                    "client_secret": settings.GOOGLE_OAUTH_CLIENT_SECRET,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                },
+            )
+            token_resp.raise_for_status()
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return RedirectResponse(url="/?login_error=no_access_token", status_code=302)
+
+            # Fetch user info
+            user_resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            user_resp.raise_for_status()
+            google_user = user_resp.json()
+    except Exception as e:
+        logger.error(f"Google OAuth token exchange failed: {e}")
+        return RedirectResponse(url="/?login_error=oauth_failed", status_code=302)
+
+    email = (google_user.get("email") or "").strip().lower()
+    first_name = google_user.get("given_name") or google_user.get("name") or ""
+    if not email:
+        return RedirectResponse(url="/?login_error=no_email", status_code=302)
+
+    # Look up or create the user
+    user = get_user_by_email(email)
+    if not user:
+        try:
+            user = create_email_user(email, "", first_name=first_name, auth_provider="google")
+            log_activity(user["id"], "register", details={"email": email, "auth_provider": "google"})
+        except ValueError:
+            return RedirectResponse(url="/?login_error=email_exists", status_code=302)
+    else:
+        log_activity(user["id"], "login", details={"auth_provider": "google"})
+
+    # Set session cookie and redirect to dashboard
+    token = create_session_for_user(user["id"])
+    _set_session_cookie(response, token)
+    return RedirectResponse(url="/?login_success=1", status_code=302)
 
 
 # ---------------------------------------------------------------------------

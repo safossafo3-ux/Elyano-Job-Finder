@@ -64,29 +64,51 @@ async def analyze_and_notify_single(
             phone_normalized="",
             has_phone=False,
         )
-        return {"status": "analysis_failed"}
+        # DON'T return here — fall through to notification. Previously, when
+        # the LLM was down or rate-limited, jobs were saved to the DB but
+        # NEVER notified to the user. Now we notify even without analysis,
+        # using the raw ad text as the caption. The user can decide if the
+        # job is relevant — better to over-notify than to silently drop.
+        logger.info(f"LLM analysis failed for {job_url[:60]} — notifying anyway with raw ad text")
+        # Skip the normal analysis path and go straight to notification
+        rejects = False
+        # Refresh job from DB to get the updated analysis fields
+        job = get_job_by_url(job_url)
+    else:
+        rejects = bool(result.get("rejects_foreigners", False)) or defensive_foreigners_check(ad_text)
 
-    rejects = bool(result.get("rejects_foreigners", False)) or defensive_foreigners_check(ad_text)
+        phone_raw = result.get("phone_raw", "")
+        phone_norm = result.get("phone_normalized", "")
+        if phone_raw and not phone_norm:
+            country = COUNTRIES.get(country_code)
+            if country:
+                phone_norm = normalize_phone(phone_raw, country.dial_code)
+        has_phone = bool(phone_norm)
 
-    phone_raw = result.get("phone_raw", "")
-    phone_norm = result.get("phone_normalized", "")
-    if phone_raw and not phone_norm:
-        country = COUNTRIES.get(country_code)
-        if country:
-            phone_norm = normalize_phone(phone_raw, country.dial_code)
-    has_phone = bool(phone_norm)
+        update_job_analysis(
+            job["id"],
+            ad_summary_en=result.get("summary_en", "")[:300],
+            rejects_foreigners=rejects,
+            phone_raw=phone_raw,
+            phone_normalized=phone_norm,
+            has_phone=has_phone,
+        )
 
-    update_job_analysis(
-        job["id"],
-        ad_summary_en=result.get("summary_en", "")[:300],
-        rejects_foreigners=rejects,
-        phone_raw=phone_raw,
-        phone_normalized=phone_norm,
-        has_phone=has_phone,
-    )
-
-    if result.get("is_relevant") is False:
-        return {"status": "irrelevant"}
+        if result.get("is_relevant") is False:
+            # RELAXED: only drop jobs the LLM is CONFIDENT are irrelevant (banners,
+            # CVs, completely unrelated content). Previously this filter was too
+            # aggressive — the LLM was marking legitimate jobs as irrelevant
+            # because they contained the word "manager" or didn't perfectly match
+            # the courier/factory/driver categories. That caused ALL notifications
+            # to be silently dropped, so users never received any jobs.
+            # Now we only drop if the ad text is very short (likely a banner/nav
+            # element) OR the LLM also returned an empty summary.
+            summary = (result.get("summary_en") or "").strip()
+            if len(ad_text) < 60 or not summary:
+                return {"status": "irrelevant"}
+            # Otherwise keep the job — it's better to over-notify than to silently
+            # drop everything.
+            logger.info(f"Keeping job despite is_relevant=False (has summary + ad_text > 60 chars): {job_url[:60]}")
 
     if rejects:
         return {"status": "rejected_foreigners"}
@@ -110,14 +132,26 @@ async def analyze_and_notify_single(
 
         # Also notify the admin fallback chat
         admin_chat = settings.TELEGRAM_CHAT_ID
-        if admin_chat and not any(str(u["telegram_chat_id"]) == str(admin_chat) for u in targets):
-            # Send to admin directly
-            ok = await notify_job(job, admin_chat)
-            if ok:
-                notified_count += 1
+        if admin_chat:
+            # Avoid double-sending if the admin is already in targets with the same chat_id
+            already_in_targets = any(
+                u.get("telegram_chat_id") and str(u["telegram_chat_id"]) == str(admin_chat)
+                for u in targets
+            )
+            if not already_in_targets:
+                ok = await notify_job(job, admin_chat)
+                if ok:
+                    notified_count += 1
 
         for u in targets:
-            ok = await notify_job(job, u["telegram_chat_id"])
+            # Skip users with no telegram_chat_id (email/password-only users
+            # can't receive Telegram notifications — they should set up
+            # email notifications in settings instead, or link their Telegram).
+            chat_id = u.get("telegram_chat_id")
+            if not chat_id:
+                logger.debug(f"Skipping notification for user {u.get('id')} — no telegram_chat_id (email-only user)")
+                continue
+            ok = await notify_job(job, chat_id)
             if ok:
                 mark_job_notified_for_user(u["id"], job["id"])
                 notified_count += 1

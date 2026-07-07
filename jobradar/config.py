@@ -831,19 +831,29 @@ class Settings:
     SMTP_USE_SSL: bool = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
 
     # ----- Phase 3: Admin -----
-    # Comma-separated list of Telegram usernames that get admin privileges.
+    # Comma-separated list of Telegram usernames OR emails that get admin privileges.
     ADMIN_TELEGRAM_USERNAMES: str = os.getenv("ADMIN_TELEGRAM_USERNAMES", "")
 
     # ----- Phase 3: Resume uploads -----
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", os.path.join(_project_root(), "upload", "resumes"))
     MAX_RESUME_SIZE_BYTES: int = int(os.getenv("MAX_RESUME_SIZE_BYTES", str(5 * 1024 * 1024)))  # 5 MB
 
+    # ----- Multi-auth: Google OAuth -----
+    # All optional. If not set, the "Sign in with Google" button is hidden.
+    GOOGLE_OAUTH_CLIENT_ID: str = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+    GOOGLE_OAUTH_CLIENT_SECRET: str = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    # Redirect URI must match what's configured in Google Cloud Console.
+    # Default: <WEBAPP_PUBLIC_URL>/api/auth/google/callback
+    GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv(
+        "GOOGLE_OAUTH_REDIRECT_URI", ""
+    )
 
-def is_admin(username: str) -> bool:
-    """Check whether a Telegram username is in the admin list."""
-    if not username or not settings.ADMIN_TELEGRAM_USERNAMES:
+
+def is_admin(username_or_email: str) -> bool:
+    """Check whether a Telegram username OR email is in the admin list."""
+    if not username_or_email or not settings.ADMIN_TELEGRAM_USERNAMES:
         return False
-    clean = username.strip().lstrip("@").lower()
+    clean = username_or_email.strip().lstrip("@").lower()
     admins = [a.strip().lstrip("@").lower() for a in settings.ADMIN_TELEGRAM_USERNAMES.split(",") if a.strip()]
     return clean in admins
 
