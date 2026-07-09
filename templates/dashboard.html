@@ -1267,11 +1267,14 @@
                     onclick="copyBotHandle('{{ telegram_bot_username }}')">Copy</button>
           </div>
           <a class="bot-link" id="botHeroBtn"
-             href="tg://search?query=%40{{ telegram_bot_username }}%20"
+             href="https://t.me/{{ telegram_bot_username }}"
              onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block; margin-top:8px;">
             💬 Open @{{ telegram_bot_username }} in Telegram
           </a>
+          <p style="margin-top:6px; font-size:11px; color:#64748b;">
+            The bot's chat opens directly. Its display name is "Elyano Job Finder" but the @ handle <code>@{{ telegram_bot_username }}</code> is shown at the top of the chat — that's how you know it's the right bot.
+          </p>
         </div>
         {% else %}
         <p style="color:#f87171; font-size:12px;">
@@ -1294,7 +1297,7 @@
             Tap the button below to open the bot in Telegram — it will <b>automatically send you the code</b> the moment you press Start.
           </p>
           <a class="bot-link" id="deepLinkBtn"
-             href="tg://search?query=%40{{ telegram_bot_username }}%20"
+             href="https://t.me/{{ telegram_bot_username }}"
              onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block;">
             💬 Open @{{ telegram_bot_username }} in Telegram
@@ -1676,56 +1679,40 @@ const state = {
 };
 
 // ============================================================
-// Telegram app launcher — opens the Telegram APP directly (not the t.me
-// website) with the bot's exact @<bot> handle pre-filled in the search bar.
+// Telegram bot launcher — opens the bot's chat DIRECTLY.
 //
-// Uses the tg://search?query=%40<bot>%20 deep-link scheme:
-//   1. Launches the Telegram app directly (via tg:// protocol)
-//   2. Opens the search screen with @<bot> pre-filled in the search bar
-//      (lowercase, with @, no spaces — the trailing %20 is trimmed by
-//      Telegram for display, but its presence prevents Telegram from
-//      auto-resolving the @ handle and skipping straight to the bot's chat)
-//   3. The bot appears at the top of the search results
-//   4. User taps the bot → tap Start → registered
+// We intentionally do NOT use tg://search?query=@<bot> anymore. Modern
+// Telegram clients auto-resolve the @ handle in search queries and jump
+// straight into the bot's chat, where the chat header shows the bot's
+// DISPLAY NAME ("Elyano Job Finder") instead of the raw @ handle. That
+// confused users who expected to verify the literal "@EuropaElyano_bot"
+// text in the search bar.
 //
-// ALSO copies the @<bot> handle to the clipboard so the user can paste it
-// manually into Telegram's search bar if their client still misbehaves.
+// Instead, we use the canonical https://t.me/<bot> deep link. This:
+//   • On mobile/desktop with Telegram installed → opens the app straight
+//     to the bot's chat (no search step).
+//   • On devices without Telegram → opens the t.me web preview of the
+//     bot's chat.
 //
-// Falls back to https://t.me/<bot> only if the Telegram app isn't
-// installed (detected via visibility change after 1.5 seconds).
+// In both cases the bot's @ handle ("@EuropaElyano_bot") is visible at
+// the top of the chat / in the chat info screen — and we also copy the
+// exact "@EuropaElyano_bot" string to the clipboard as a manual fallback.
 // ============================================================
 function openTelegramApp(event, botUsername) {
   if (event) event.preventDefault();
   // Preserve the EXACT bot username (e.g. '@EuropaElyano_bot').
-  // Telegram resolves usernames case-insensitively, but the user wants
-  // the brand-correct spelling copied & shown everywhere.
   const exactBot = (botUsername || 'EuropaElyano_bot').trim();
   const handle = `@${exactBot}`;
+  const directUrl = `https://t.me/${exactBot}`;
 
-  // Primary URL: tg://search with @<bot> + trailing space. The trailing
-  // %20 (space) is critical — without it, Telegram auto-resolves the
-  // @ handle and opens the bot's chat directly, bypassing the search bar
-  // entirely (the user would see the bot's display name like "Elyano Job
-  // Finder" as the chat title, instead of the raw @ handle in the search
-  // bar). With the trailing space, the query no longer matches a clean
-  // username pattern, so Telegram keeps the literal "@EuropaElyano_bot"
-  // text in the search bar (and trims the trailing space for display).
-  const appUrl = `tg://search?query=%40${encodeURIComponent(exactBot)}%20`;
-  // Fallback URL: t.me web page (used only if the app isn't installed)
-  const webUrl = `https://t.me/${botUsername}`;
-
-  // Also copy the @<bot> handle to the clipboard so the user can paste it
-  // manually into Telegram's search bar if their client still misbehaves.
-  // This is non-blocking — we don't await it. We show a toast confirming.
+  // Copy the exact @<bot> handle to the clipboard so the user can paste
+  // it into Telegram's search bar manually if they want to double-check.
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(handle).then(() => {
-        showToast(`✅ Copied ${handle} — paste in Telegram search if needed`, 'info');
-      }).catch(() => {
-        // Clipboard write rejected (e.g., non-HTTPS, permissions) — silent
-      });
+        showToast(`✅ Copied ${handle} — verify it in the bot's chat header`, 'info');
+      }).catch(() => { /* clipboard rejected — silent */ });
     } else {
-      // Fallback for older browsers
       const ta = document.createElement('textarea');
       ta.value = handle;
       ta.style.position = 'fixed';
@@ -1734,47 +1721,13 @@ function openTelegramApp(event, botUsername) {
       ta.select();
       try { document.execCommand('copy'); } catch (e) {}
       document.body.removeChild(ta);
-      showToast(`✅ Copied ${handle} — paste in Telegram search if needed`, 'info');
+      showToast(`✅ Copied ${handle} — verify it in the bot's chat header`, 'info');
     }
   } catch (e) { /* clipboard failed — silent, the deep-link still works */ }
 
-  // Track whether the Telegram app successfully opened.
-  // If the app launches, the page loses visibility ("hidden").
-  let appOpened = false;
-  const onVisChange = () => {
-    if (document.hidden) appOpened = true;
-  };
-  document.addEventListener('visibilitychange', onVisChange);
-
-  // Technique 1: hidden iframe — most reliable on iOS Safari (which blocks
-  // window.location redirects to custom schemes in some cases).
-  try {
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    iframe.src = appUrl;
-    document.body.appendChild(iframe);
-    // Remove the iframe after 100ms — by then the OS has either launched
-    // the app or ignored the scheme.
-    setTimeout(() => { try { document.body.removeChild(iframe); } catch (e) {} }, 100);
-  } catch (e) { /* iframe failed, try location redirect below */ }
-
-  // Technique 2: also set window.location.href — works on Android + desktop.
-  // Wrapped in try/catch because some browsers throw on unknown schemes.
-  try {
-    window.location.href = appUrl;
-  } catch (e) { /* ignore */ }
-
-  // Fallback: after 1.5 seconds, if the page is still visible (app didn't
-  // open), redirect to the t.me web URL so the user isn't stuck.
-  setTimeout(() => {
-    document.removeEventListener('visibilitychange', onVisChange);
-    if (!appOpened && !document.hidden) {
-      // App didn't open — user probably doesn't have Telegram installed.
-      // Open the t.me web page as a last resort.
-      console.log('Telegram app did not open, falling back to web URL');
-      window.open(webUrl, '_blank', 'noopener');
-    }
-  }, 1500);
+  // Open the bot's chat directly. On mobile this launches the Telegram
+  // app; on desktop without the app it opens web.telegram.org.
+  window.open(directUrl, '_blank', 'noopener');
 
   return false;
 }
