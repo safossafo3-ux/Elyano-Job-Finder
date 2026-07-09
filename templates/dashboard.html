@@ -1679,38 +1679,59 @@ const state = {
 };
 
 // ============================================================
-// Telegram bot launcher — opens the bot's chat DIRECTLY.
+// Telegram bot launcher — opens the bot's chat DIRECTLY in the Telegram
+// APP (not the website).
 //
-// We intentionally do NOT use tg://search?query=@<bot> anymore. Modern
-// Telegram clients auto-resolve the @ handle in search queries and jump
-// straight into the bot's chat, where the chat header shows the bot's
-// DISPLAY NAME ("Elyano Job Finder") instead of the raw @ handle. That
-// confused users who expected to verify the literal "@EuropaElyano_bot"
-// text in the search bar.
+// WHY tg:// AND NOT https://t.me/:
+//   https://t.me/<bot> relies on "universal links" — the OS/browser must
+//   intercept the URL and launch the app. This is unreliable: many
+//   desktop browsers, in-app browsers (Instagram/Facebook/TikTok), and
+//   some mobile contexts DON'T intercept it, so the browser navigates to
+//   telegram.org (the marketing site) instead of launching the app.
 //
-// Instead, we use the canonical https://t.me/<bot> deep link. This:
-//   • On mobile/desktop with Telegram installed → opens the app straight
-//     to the bot's chat (no search step).
-//   • On devices without Telegram → opens the t.me web preview of the
-//     bot's chat.
+//   tg://resolve?domain=<bot> is Telegram's OFFICIAL app-launch URL scheme
+//   (documented at core.telegram.org/api/links). The OS registers tg://
+//   as a handler for the Telegram app, so the browser launches the app
+//   directly — no universal-link interception needed.
 //
-// In both cases the bot's @ handle ("@EuropaElyano_bot") is visible at
-// the top of the chat / in the chat info screen — and we also copy the
-// exact "@EuropaElyano_bot" string to the clipboard as a manual fallback.
+// WHY NOT IFRAME:
+//   iOS Safari has blocked custom-scheme launches from iframes since
+//   iOS 9. We use window.location.href instead, triggered from the
+//   user's click (required by Android Chrome too).
+//
+// FALLBACK:
+//   If the Telegram app isn't installed, the tg:// scheme does nothing
+//   (the browser silently ignores it). We detect this via blur +
+//   visibilitychange + focus events: if the page never goes "hidden"
+//   within ~1.2 seconds, the app didn't open → we fall back to the
+//   https://t.me/<bot> web URL.
+//
+// START PARAMETER (optional):
+//   For the registration auto-code flow, pass startPayload='reg_<username>'.
+//   This becomes tg://resolve?domain=<bot>&start=<payload> which makes
+//   Telegram show a Start button that delivers /start <payload> to the
+//   bot — the bot then auto-sends the registration code.
 // ============================================================
-function openTelegramApp(event, botUsername) {
+function openTelegramApp(event, botUsername, startPayload) {
   if (event) event.preventDefault();
   // Preserve the EXACT bot username (e.g. '@EuropaElyano_bot').
   const exactBot = (botUsername || 'EuropaElyano_bot').trim();
   const handle = `@${exactBot}`;
-  const directUrl = `https://t.me/${exactBot}`;
+
+  // Build the app-launch URL (tg:// scheme) and web fallback (https://t.me/)
+  let appUrl = `tg://resolve?domain=${encodeURIComponent(exactBot)}`;
+  let webUrl = `https://t.me/${exactBot}`;
+  if (startPayload) {
+    appUrl += `&start=${encodeURIComponent(startPayload)}`;
+    webUrl += `?start=${encodeURIComponent(startPayload)}`;
+  }
 
   // Copy the exact @<bot> handle to the clipboard so the user can paste
-  // it into Telegram's search bar manually if they want to double-check.
+  // it into Telegram's search bar manually if the app doesn't launch.
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(handle).then(() => {
-        showToast(`✅ Copied ${handle} — verify it in the bot's chat header`, 'info');
+        showToast(`✅ Copied ${handle} — opening Telegram…`, 'info');
       }).catch(() => { /* clipboard rejected — silent */ });
     } else {
       const ta = document.createElement('textarea');
@@ -1721,13 +1742,69 @@ function openTelegramApp(event, botUsername) {
       ta.select();
       try { document.execCommand('copy'); } catch (e) {}
       document.body.removeChild(ta);
-      showToast(`✅ Copied ${handle} — verify it in the bot's chat header`, 'info');
+      showToast(`✅ Copied ${handle} — opening Telegram…`, 'info');
     }
   } catch (e) { /* clipboard failed — silent, the deep-link still works */ }
 
-  // Open the bot's chat directly. On mobile this launches the Telegram
-  // app; on desktop without the app it opens web.telegram.org.
-  window.open(directUrl, '_blank', 'noopener');
+  // ---- App-launch detection (blur + visibilitychange + focus) ----
+  // If the Telegram app opens, the page either loses focus (window blur)
+  // or becomes hidden (visibilitychange). We track both. If NEITHER
+  // happens within ~1.2 seconds, the app isn't installed → fall back to
+  // the web URL.
+  let appOpened = false;
+  let fallbackTimer = null;
+
+  const onVisChange = () => {
+    if (document.hidden) {
+      appOpened = true;
+      if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
+    }
+  };
+  const onBlur = () => {
+    // Window lost focus — likely the app-switch dialog or the app itself.
+    // Give it a brief moment; if focus doesn't return immediately, treat
+    // it as "app opened".
+    appOpened = true;
+    if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
+  };
+
+  document.addEventListener('visibilitychange', onVisChange);
+  window.addEventListener('blur', onBlur);
+
+  // When the user returns to this page (from the Telegram app), clean up
+  // the listeners. If they never left (app didn't open), the fallback
+  // timer below handles it.
+  const onFocus = () => {
+    window.removeEventListener('focus', onFocus);
+    if (appOpened) {
+      // User came back from the Telegram app — clean up.
+      document.removeEventListener('visibilitychange', onVisChange);
+      window.removeEventListener('blur', onBlur);
+    }
+  };
+  window.addEventListener('focus', onFocus);
+
+  // Launch the Telegram app via tg:// scheme.
+  // MUST be triggered from a user gesture (this click handler) — Android
+  // Chrome blocks scheme launches without a user gesture.
+  try {
+    window.location.href = appUrl;
+  } catch (e) { /* some browsers throw on unknown schemes — ignore */ }
+
+  // Fallback: after 1.2 seconds, if the page is still visible and focused
+  // (app didn't open), redirect to the https://t.me/ web URL.
+  fallbackTimer = setTimeout(() => {
+    document.removeEventListener('visibilitychange', onVisChange);
+    window.removeEventListener('blur', onBlur);
+    window.removeEventListener('focus', onFocus);
+    if (!appOpened && !document.hidden) {
+      // App didn't open — user probably doesn't have Telegram installed.
+      // Open the t.me web URL as a last resort.
+      console.log('Telegram app did not open via tg:// — falling back to web URL');
+      window.open(webUrl, '_blank', 'noopener');
+      showToast('Telegram app not detected — opened the web version. For the best experience, install the Telegram app on your device.', 'info');
+    }
+  }, 1200);
 
   return false;
 }
@@ -2231,24 +2308,14 @@ async function requestTelegramCode(isResend) {
             const u = new URL(d.deep_link);
             bot = u.pathname.replace(/^\//, '') || bot;
           } catch (e) { /* use default */ }
-          // Use the https://t.me/<bot>?start=reg_<username> deep link so the
-          // bot receives the payload on /start and auto-sends the registration
-          // code. This is the smoothest flow: one tap → code arrives.
+          // Use openTelegramApp() with the start payload so the Telegram APP
+          // launches directly via tg://resolve?domain=<bot>&start=reg_<username>.
+          // The bot receives the payload on /start and auto-sends the
+          // registration code — smoothest flow: one tap → code arrives.
           const startPayload = 'reg_' + username;
           link.href = `https://t.me/${bot}?start=${encodeURIComponent(startPayload)}`;
           link.onclick = function (e) {
-            e.preventDefault();
-            // Open the t.me link (works on both mobile and desktop — opens
-            // the Telegram app or web client). Also copy the handle as a
-            // fallback in case the start parameter doesn't carry through.
-            try {
-              if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(`@${bot}`).catch(() => {});
-              }
-            } catch (e2) {}
-            window.open(link.href, '_blank', 'noopener');
-            showToast('Opened Telegram — press Start. Your code will arrive automatically.', 'info');
-            return false;
+            return openTelegramApp(e, bot, startPayload);
           };
         }
       }
