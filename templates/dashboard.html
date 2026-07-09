@@ -1269,7 +1269,6 @@
           <a class="bot-link" id="botHeroBtn"
              href="https://t.me/{{ telegram_bot_username }}"
              target="_blank" rel="noopener noreferrer"
-             onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block; margin-top:8px;">
             💬 Open @{{ telegram_bot_username }} in Telegram
           </a>
@@ -1300,7 +1299,6 @@
           <a class="bot-link" id="deepLinkBtn"
              href="https://t.me/{{ telegram_bot_username }}"
              target="_blank" rel="noopener noreferrer"
-             onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block;">
             💬 Open @{{ telegram_bot_username }} in Telegram
           </a>
@@ -2229,15 +2227,15 @@ async function requestTelegramCode(isResend) {
             const u = new URL(d.deep_link);
             bot = u.pathname.replace(/^\//, '') || bot;
           } catch (e) { /* use default */ }
-          // Use openTelegramApp() with the start payload so the Telegram APP
-          // launches directly via tg://resolve?domain=<bot>&start=reg_<username>.
-          // The bot receives the payload on /start and auto-sends the
-          // registration code — smoothest flow: one tap → code arrives.
+          // Set the href to include the ?start=reg_<username> payload so
+          // the bot receives it on /start and auto-sends the registration
+          // code. NO onclick handler — let the browser's native <a> click
+          // handle the navigation (JavaScript onclick handlers were
+          // interfering with the link navigation).
           const startPayload = 'reg_' + username;
           link.href = `https://t.me/${bot}?start=${encodeURIComponent(startPayload)}`;
-          link.onclick = function (e) {
-            return openTelegramApp(e, bot, startPayload);
-          };
+          // Remove any previously-attached onclick handler
+          link.onclick = null;
         }
       }
       btn.disabled = false; btn.textContent = 'Send me a code →';
