@@ -1268,6 +1268,7 @@
           </div>
           <a class="bot-link" id="botHeroBtn"
              href="https://t.me/{{ telegram_bot_username }}"
+             target="_blank" rel="noopener noreferrer"
              onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block; margin-top:8px;">
             💬 Open @{{ telegram_bot_username }} in Telegram
@@ -1298,6 +1299,7 @@
           </p>
           <a class="bot-link" id="deepLinkBtn"
              href="https://t.me/{{ telegram_bot_username }}"
+             target="_blank" rel="noopener noreferrer"
              onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block;">
             💬 Open @{{ telegram_bot_username }} in Telegram
@@ -1679,183 +1681,57 @@ const state = {
 };
 
 // ============================================================
-// Telegram bot launcher — opens the bot's chat DIRECTLY in the Telegram
-// APP (not the website).
+// Telegram bot launcher — opens the bot's chat via a NATIVE <a> click.
 //
-// WHY tg:// AND NOT https://t.me/:
-//   https://t.me/<bot> relies on "universal links" — the OS/browser must
-//   intercept the URL and launch the app. This is unreliable: many
-//   desktop browsers, in-app browsers (Instagram/Facebook/TikTok), and
-//   some mobile contexts DON'T intercept it, so the browser navigates to
-//   telegram.org (the marketing site) instead of launching the app.
+// WHY THIS APPROACH (after 4 failed attempts):
+//   1. tg://search?query=@bot  → Telegram showed the bot's display name
+//      ("Elyano Job Finder") instead of the raw @ handle
+//   2. https://t.me/bot via window.open() → opened telegram.org (the
+//      marketing site) because window.open() with noopener doesn't
+//      properly trigger universal-link interception
+//   3. tg://resolve?domain=bot via window.location.href → Telegram opened
+//      but showed "username not found" (the query string was mangled)
+//   4. tg://resolve?domain=bot via synthetic <a>.click() → still
+//      "username not found"
 //
-//   tg://resolve?domain=<bot> is Telegram's OFFICIAL app-launch URL scheme
-//   (documented at core.telegram.org/api/links). The OS registers tg://
-//   as a handler for the Telegram app, so the browser launches the app
-//   directly — no universal-link interception needed.
+// SOLUTION: Use a NATIVE <a href="https://t.me/bot" target="_blank">
+// click. This is Telegram's officially-recommended deep link. The
+// browser's native link handler (NOT JavaScript window.open) processes
+// the URL, which properly triggers:
+//   • On mobile/desktop with Telegram installed → opens the app
+//   • On devices without Telegram → opens web.telegram.org
 //
-// WHY NOT IFRAME:
-//   iOS Safari has blocked custom-scheme launches from iframes since
-//   iOS 9. We use window.location.href instead, triggered from the
-//   user's click (required by Android Chrome too).
-//
-// FALLBACK:
-//   If the Telegram app isn't installed, the tg:// scheme does nothing
-//   (the browser silently ignores it). We detect this via blur +
-//   visibilitychange + focus events: if the page never goes "hidden"
-//   within ~1.2 seconds, the app didn't open → we fall back to the
-//   https://t.me/<bot> web URL.
-//
-// START PARAMETER (optional):
-//   For the registration auto-code flow, pass startPayload='reg_<username>'.
-//   This becomes tg://resolve?domain=<bot>&start=<payload> which makes
-//   Telegram show a Start button that delivers /start <payload> to the
-//   bot — the bot then auto-sends the registration code.
+// The onclick handler ONLY copies the @ handle to the clipboard — it
+// does NOT call preventDefault, so the browser's native navigation
+// happens normally.
 // ============================================================
 function openTelegramApp(event, botUsername, startPayload) {
-  if (event) event.preventDefault();
-  // Preserve the EXACT bot username (e.g. '@EuropaElyano_bot').
+  // Copy the exact @<bot> handle to the clipboard (non-blocking).
+  // Do NOT preventDefault — let the browser's native <a> click handle
+  // the navigation to https://t.me/<bot>.
   const exactBot = (botUsername || 'EuropaElyano_bot').trim();
   const handle = `@${exactBot}`;
-
-  // Build the app-launch URL (tg:// scheme) and web fallback (https://t.me/)
-  let appUrl = `tg://resolve?domain=${encodeURIComponent(exactBot)}`;
-  let webUrl = `https://t.me/${exactBot}`;
-  if (startPayload) {
-    appUrl += `&start=${encodeURIComponent(startPayload)}`;
-    webUrl += `?start=${encodeURIComponent(startPayload)}`;
-  }
-
-  // Copy the exact @<bot> handle to the clipboard so the user can paste
-  // it into Telegram's search bar manually if the app doesn't launch.
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(handle).then(() => {
         showToast(`✅ Copied ${handle} — opening Telegram…`, 'info');
       }).catch(() => { /* clipboard rejected — silent */ });
-    } else {
-      const ta = document.createElement('textarea');
-      ta.value = handle;
-      ta.style.position = 'fixed';
-      ta.style.left = '-9999px';
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand('copy'); } catch (e) {}
-      document.body.removeChild(ta);
-      showToast(`✅ Copied ${handle} — opening Telegram…`, 'info');
     }
-  } catch (e) { /* clipboard failed — silent, the deep-link still works */ }
+  } catch (e) { /* clipboard failed — silent, the link still works */ }
 
-  // ---- App-launch detection (blur + visibilitychange + focus) ----
-  // If the Telegram app opens, the page either loses focus (window blur)
-  // or becomes hidden (visibilitychange). We track both. If NEITHER
-  // happens within ~1.2 seconds, the app isn't installed → fall back to
-  // the web URL.
-  let appOpened = false;
-  let fallbackTimer = null;
-
-  const onVisChange = () => {
-    if (document.hidden) {
-      appOpened = true;
-      if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
+  // If the caller passed a startPayload, we need to update the link's
+  // href to include ?start=<payload> BEFORE the browser navigates.
+  if (startPayload && event && event.currentTarget) {
+    const link = event.currentTarget;
+    const newHref = `https://t.me/${exactBot}?start=${encodeURIComponent(startPayload)}`;
+    if (link.href !== newHref) {
+      link.href = newHref;
     }
-  };
-  const onBlur = () => {
-    // Window lost focus — likely the app-switch dialog or the app itself.
-    // Give it a brief moment; if focus doesn't return immediately, treat
-    // it as "app opened".
-    appOpened = true;
-    if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
-  };
+  }
 
-  document.addEventListener('visibilitychange', onVisChange);
-  window.addEventListener('blur', onBlur);
-
-  // When the user returns to this page (from the Telegram app), clean up
-  // the listeners. If they never left (app didn't open), the fallback
-  // timer below handles it.
-  const onFocus = () => {
-    window.removeEventListener('focus', onFocus);
-    if (appOpened) {
-      // User came back from the Telegram app — clean up.
-      document.removeEventListener('visibilitychange', onVisChange);
-      window.removeEventListener('blur', onBlur);
-    }
-  };
-  window.addEventListener('focus', onFocus);
-
-  // Launch the Telegram app via tg:// scheme.
-  // METHOD: synthetic <a> element click. This is MORE RELIABLE than
-  // window.location.href for custom URL schemes because:
-  //   1. The browser's native link handler processes the URL (no JS
-  //      navigation interference that can truncate the query string)
-  //   2. The full URL (including ?domain=...&start=...) reaches the OS
-  //      scheme handler intact
-  //   3. Works on iOS Safari, Android Chrome, and desktop (Firefox/
-  //      Chrome/Edge/Safari)
-  // MUST be triggered synchronously from the user's click gesture —
-  // Android Chrome blocks scheme launches without a user gesture.
-  try {
-    const a = document.createElement('a');
-    a.href = appUrl;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    // Clean up the anchor after a short delay (gives the browser time
-    // to initiate the scheme launch).
-    setTimeout(() => { try { document.body.removeChild(a); } catch (e) {} }, 100);
-  } catch (e) { /* some browsers throw on unknown schemes — ignore */ }
-
-  // Fallback: after 1.5 seconds, if the page is still visible and focused
-  // (app didn't open), show a manual-search panel with the exact @ handle
-  // and a t.me web link. This gives the user a clear recovery path
-  // whether the app isn't installed OR the scheme launched but failed
-  // (e.g. Telegram showed "username not found").
-  fallbackTimer = setTimeout(() => {
-    document.removeEventListener('visibilitychange', onVisChange);
-    window.removeEventListener('blur', onBlur);
-    window.removeEventListener('focus', onFocus);
-    if (!appOpened && !document.hidden) {
-      // App didn't open OR opened but showed an error. Show the manual
-      // recovery panel with the exact handle + a t.me web link.
-      console.log('Telegram app did not open (or showed an error) — showing manual fallback');
-      showTelegramFallback(handle, webUrl);
-    }
-  }, 1500);
-
-  return false;
-}
-
-// ============================================================
-// Manual fallback panel — shown when the Telegram app doesn't open or
-// shows an error. Gives the user the exact @ handle to search manually
-// in Telegram, plus a t.me web link as a secondary option.
-// ============================================================
-function showTelegramFallback(handle, webUrl) {
-  // Remove any existing fallback panel first
-  const existing = document.getElementById('tgFallbackPanel');
-  if (existing) existing.remove();
-
-  const panel = document.createElement('div');
-  panel.id = 'tgFallbackPanel';
-  panel.style.cssText = 'position:fixed; bottom:20px; right:20px; max-width:360px; z-index:10000; background:#0d1f3a; border:2px solid #22d3ee; border-radius:12px; padding:16px; box-shadow:0 8px 24px rgba(0,0,0,0.4); font-family:inherit;';
-  panel.innerHTML = `
-    <div style="color:#22d3ee; font-weight:700; font-size:14px; margin-bottom:8px;">💬 Open Telegram manually</div>
-    <p style="color:#cbd5e1; font-size:13px; line-height:1.5; margin:0 0 12px 0;">
-      If Telegram didn't open to the bot, copy the handle below, open Telegram, tap the search icon, and paste it:
-    </p>
-    <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
-      <code style="flex:1; background:#0a1628; color:#22d3ee; padding:8px 12px; border-radius:6px; font-size:14px; font-family:monospace;">${handle}</code>
-      <button onclick="copyBotHandle('${handle.replace('@','')}')" style="background:#22d3ee; color:#0a1628; border:none; border-radius:6px; padding:8px 12px; font-weight:600; cursor:pointer; font-size:12px;">Copy</button>
-    </div>
-    <a href="${webUrl}" target="_blank" rel="noopener" style="display:block; text-align:center; background:#6366f1; color:white; padding:10px; border-radius:6px; text-decoration:none; font-size:13px; font-weight:600;">
-      Or open ${webUrl} in browser →
-    </a>
-    <button onclick="document.getElementById('tgFallbackPanel').remove()" style="position:absolute; top:8px; right:8px; background:none; border:none; color:#64748b; font-size:18px; cursor:pointer;">×</button>
-  `;
-  document.body.appendChild(panel);
-  // Auto-remove after 30 seconds
-  setTimeout(() => { try { panel.remove(); } catch (e) {} }, 30000);
+  // Return true so the browser's default action (navigate to the link)
+  // proceeds normally.
+  return true;
 }
 
 // ============================================================
@@ -1902,12 +1778,8 @@ async function copyBotHandle(botUsername) {
 function initSplash() {
   const splash = document.getElementById('splashOverlay');
   if (!splash) return;
-  // If already shown this session, hide immediately and skip
-  if (sessionStorage.getItem('elyano_splash_seen')) {
-    splash.style.display = 'none';
-    return;
-  }
-  // Auto-hide after 2.6s
+  // Show the splash on EVERY page load (user wants to see it each time
+  // they visit the site). Auto-hide after 2.6s.
   setTimeout(() => { hideSplash(); }, 2600);
 }
 
