@@ -1262,12 +1262,12 @@
         <div class="bot-manual-search" style="margin-bottom:14px;">
           <span class="bot-manual-label">First time? Open the bot once so it can DM you:</span>
           <div class="bot-manual-handle-row">
-            <code class="bot-manual-handle" id="botHandleText">@{{ telegram_bot_username | lower }}</code>
+            <code class="bot-manual-handle" id="botHandleText">@{{ telegram_bot_username }}</code>
             <button type="button" class="bot-copy-btn" id="botCopyBtn"
-                    onclick="copyBotHandle('{{ telegram_bot_username | lower }}')">Copy</button>
+                    onclick="copyBotHandle('{{ telegram_bot_username }}')">Copy</button>
           </div>
           <a class="bot-link" id="botHeroBtn"
-             href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
+             href="tg://search?query=%40{{ telegram_bot_username }}%20"
              onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block; margin-top:8px;">
             💬 Open @{{ telegram_bot_username }} in Telegram
@@ -1294,7 +1294,7 @@
             Tap the button below to open the bot in Telegram — it will <b>automatically send you the code</b> the moment you press Start.
           </p>
           <a class="bot-link" id="deepLinkBtn"
-             href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
+             href="tg://search?query=%40{{ telegram_bot_username }}%20"
              onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
              style="display:block;">
             💬 Open @{{ telegram_bot_username }} in Telegram
@@ -1696,8 +1696,11 @@ const state = {
 // ============================================================
 function openTelegramApp(event, botUsername) {
   if (event) event.preventDefault();
-  const lowerBot = (botUsername || '').toLowerCase();
-  const handle = `@${lowerBot}`;
+  // Preserve the EXACT bot username (e.g. '@EuropaElyano_bot').
+  // Telegram resolves usernames case-insensitively, but the user wants
+  // the brand-correct spelling copied & shown everywhere.
+  const exactBot = (botUsername || 'EuropaElyano_bot').trim();
+  const handle = `@${exactBot}`;
 
   // Primary URL: tg://search with @<bot> + trailing space. The trailing
   // %20 (space) is critical — without it, Telegram auto-resolves the
@@ -1705,9 +1708,9 @@ function openTelegramApp(event, botUsername) {
   // entirely (the user would see the bot's display name like "Elyano Job
   // Finder" as the chat title, instead of the raw @ handle in the search
   // bar). With the trailing space, the query no longer matches a clean
-  // username pattern, so Telegram keeps the literal "@europaelyano_bot"
+  // username pattern, so Telegram keeps the literal "@EuropaElyano_bot"
   // text in the search bar (and trims the trailing space for display).
-  const appUrl = `tg://search?query=%40${encodeURIComponent(lowerBot)}%20`;
+  const appUrl = `tg://search?query=%40${encodeURIComponent(exactBot)}%20`;
   // Fallback URL: t.me web page (used only if the app isn't installed)
   const webUrl = `https://t.me/${botUsername}`;
 
@@ -1781,7 +1784,8 @@ function openTelegramApp(event, botUsername) {
 // Telegram's search bar manually if the deep-link doesn't work.
 // ============================================================
 async function copyBotHandle(botUsername) {
-  const handle = `@${(botUsername || '').toLowerCase()}`;
+  // Preserve the EXACT bot username (e.g. '@EuropaElyano_bot').
+  const handle = `@${(botUsername || 'EuropaElyano_bot').trim()}`;
   const btn = document.getElementById('botCopyBtn');
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2286,7 +2290,7 @@ async function requestTelegramCode(isResend) {
             // fallback in case the start parameter doesn't carry through.
             try {
               if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(`@${bot.toLowerCase()}`).catch(() => {});
+                navigator.clipboard.writeText(`@${bot}`).catch(() => {});
               }
             } catch (e2) {}
             window.open(link.href, '_blank', 'noopener');
