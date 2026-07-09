@@ -23,6 +23,16 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE,
     password_hash TEXT,
     auth_provider TEXT DEFAULT 'telegram',
+    -- Profile fields (2026-07)
+    profile_photo_path TEXT,
+    bio TEXT,
+    job_title TEXT,
+    location TEXT,
+    phone TEXT,
+    skills TEXT,
+    experience_years INTEGER,
+    website TEXT,
+    linkedin TEXT,
     created_at TEXT NOT NULL,
     last_login_at TEXT
 );
@@ -206,6 +216,9 @@ CREATE TABLE IF NOT EXISTS registration_codes (
 
 CREATE INDEX IF NOT EXISTS idx_reg_codes_method_identifier
     ON registration_codes(method, identifier, used);
+
+-- Profile fields (2026-07) — let users build a profile with photo, bio, skills, etc.
+-- Added via idempotent ALTER TABLE migrations below for existing databases.
 """
 
 # Migrations for existing databases (idempotent — safe to run multiple times)
@@ -224,6 +237,16 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN password_hash TEXT",
     "ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'telegram'",
     "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
+    # Profile fields (2026-07) — profile photo, bio, professional details
+    "ALTER TABLE users ADD COLUMN profile_photo_path TEXT",
+    "ALTER TABLE users ADD COLUMN bio TEXT",
+    "ALTER TABLE users ADD COLUMN job_title TEXT",
+    "ALTER TABLE users ADD COLUMN location TEXT",
+    "ALTER TABLE users ADD COLUMN phone TEXT",
+    "ALTER TABLE users ADD COLUMN skills TEXT",
+    "ALTER TABLE users ADD COLUMN experience_years INTEGER",
+    "ALTER TABLE users ADD COLUMN website TEXT",
+    "ALTER TABLE users ADD COLUMN linkedin TEXT",
 ]
 
 
@@ -1115,6 +1138,55 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         return dict(row) if row else None
+
+
+# Allowed profile fields for update (whitelist — never allow password_hash,
+# auth_provider, telegram_user_id, etc. to be set via the profile form).
+_PROFILE_FIELDS = {
+    "first_name", "bio", "job_title", "location", "phone",
+    "skills", "experience_years", "website", "linkedin",
+}
+
+
+def update_user_profile(user_id: int, **kwargs) -> bool:
+    """Update editable profile fields for a user. Only whitelisted fields are
+    accepted; everything else is silently ignored. Returns True on success.
+
+    Fields: first_name, bio, job_title, location, phone, skills,
+            experience_years, website, linkedin
+    """
+    cleaned = {}
+    for k, v in kwargs.items():
+        if k not in _PROFILE_FIELDS:
+            continue
+        if k == "experience_years":
+            try:
+                v = int(v) if v not in (None, "", "null") else None
+            except (ValueError, TypeError):
+                continue
+        else:
+            # Strip whitespace from string fields, allow empty strings
+            v = (v or "").strip() if isinstance(v, str) else v
+        cleaned[k] = v
+    if not cleaned:
+        return False
+    with get_conn() as conn:
+        assignments = ", ".join(f"{k}=?" for k in cleaned)
+        values = list(cleaned.values()) + [user_id]
+        cur = conn.execute(
+            f"UPDATE users SET {assignments} WHERE id=?",
+            values
+        )
+        return cur.rowcount > 0
+
+
+def set_profile_photo_path(user_id: int, path: str):
+    """Set the profile photo path for a user."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET profile_photo_path=? WHERE id=?",
+            (path, user_id)
+        )
 
 
 # ---------------------------------------------------------------------------

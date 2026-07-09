@@ -177,8 +177,9 @@ async def handle_update(update: dict) -> Optional[dict]:
             payload = text.split(" ", 1)[1].strip()
 
         auto_sent_code = False
+        auto_sent_reg_code = False
         if payload.startswith("login_"):
-            # They came from the website "Send me a code" button.
+            # They came from the website "Send me a code" button (LOG IN flow).
             requested_username = payload[len("login_"):].lstrip("@").strip()
             if requested_username and requested_username.lower() != (username or "").lower():
                 await send_text(chat_id,
@@ -205,7 +206,49 @@ async def handle_update(update: dict) -> Optional[dict]:
             except Exception as e:
                 logger.error(f"Auto-send code failed: {e}")
 
-        if not username and not auto_sent_code:
+        elif payload.startswith("reg_"):
+            # They came from the website "Register with Telegram" button.
+            # Auto-send the REGISTRATION code right now so they don't have to
+            # go back to the website and click "Send me a code" again.
+            requested_username = payload[len("reg_"):].lstrip("@").strip()
+            if requested_username and requested_username.lower() != (username or "").lower():
+                await send_text(chat_id,
+                    f"📝 Quick note: you typed <code>{requested_username}</code> on the dashboard, "
+                    f"but your actual Telegram username is <code>@{username or '(none)'}</code>.\n\n"
+                    f"No worries — I'll send the registration code to your real account now."
+                )
+            try:
+                # Use the actual Telegram username (we know it's valid since
+                # they just messaged us). Fall back to what they typed.
+                effective_username = username or requested_username
+                result = await send_registration_code_to_user(effective_username)
+                if result.get("ok"):
+                    await send_text(chat_id,
+                        f"✅ <b>Welcome to Elyano Job Finder, {first_name or username or 'friend'}!</b>\n\n"
+                        f"I just sent your 6-digit registration code above.\n\n"
+                        f"👉 Go back to the dashboard, enter the code, then choose a username and password "
+                        f"to finish creating your account.\n"
+                        f"🌐 Dashboard: {bot_link}"
+                    )
+                    auto_sent_reg_code = True
+                else:
+                    err = result.get("error", "")
+                    if result.get("already_registered"):
+                        await send_text(chat_id,
+                            f"ℹ️ <b>You're already registered!</b>\n\n"
+                            f"{err}\n\n"
+                            f"👉 Go to the dashboard and sign in with your username and password.\n"
+                            f"🌐 Dashboard: {bot_link}"
+                        )
+                    else:
+                        await send_text(chat_id,
+                            f"⚠️ Couldn't auto-send your registration code: {err}\n\n"
+                            f"👉 Go back to the dashboard and click \"Send me a code\" again."
+                        )
+            except Exception as e:
+                logger.error(f"Auto-send registration code failed: {e}")
+
+        if not username and not auto_sent_code and not auto_sent_reg_code:
             await send_text(chat_id,
                 f"👋 Welcome to JobRadar, {first_name or 'friend'}!\n\n"
                 f"⚠️ <b>Important:</b> Your Telegram account doesn't have a public username set, "
@@ -218,17 +261,17 @@ async def handle_update(update: dict) -> Optional[dict]:
             )
             return {"status": "no_username"}
 
-        if not auto_sent_code:
+        if not auto_sent_code and not auto_sent_reg_code:
             display_name = f"@{username}" if username else (first_name or "friend")
             await send_text(chat_id,
                 f"✅ <b>You're registered, {first_name or display_name}!</b>\n\n"
-                f"Your Telegram username <code>@{username}</code> is now your JobRadar login.\n\n"
-                f"👉 Go to the dashboard, enter <code>{username}</code>, "
-                f"and I'll send a 6-digit login code right here.\n"
+                f"Your Telegram username <code>@{username}</code> is now connected to Elyano Job Finder.\n\n"
+                f"👉 Go to the dashboard to log in or create your account.\n"
                 f"🌐 Dashboard: {bot_link}\n\n"
                 f"I'll also send you job alerts here automatically once a scan finds matches."
             )
-        return {"status": "registered", "existing_user": bool(existing), "auto_sent_code": auto_sent_code}
+        return {"status": "registered", "existing_user": bool(existing),
+                "auto_sent_code": auto_sent_code, "auto_sent_reg_code": auto_sent_reg_code}
 
     elif text == "/help":
         await send_text(chat_id,

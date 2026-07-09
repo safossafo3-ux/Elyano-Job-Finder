@@ -60,6 +60,8 @@ from .database import (
     # New unified registration framework (2026-07)
     create_registration_code, peek_registration_code, consume_registration_code,
     create_user_with_credentials,
+    # Profile fields (2026-07)
+    update_user_profile, set_profile_photo_path, get_user_by_id,
 )
 from .scheduler import start_scheduler, stop_scheduler, run_scan_and_pipeline, run_scheduled_searches
 from .telegram_bot import send_text, send_login_code_to_user, send_registration_code_to_user
@@ -144,15 +146,28 @@ async def get_current_user(request: Request) -> Optional[dict]:
     return get_user_by_session(token)
 
 
-def _set_session_cookie(response: Response, token: str):
-    response.set_cookie(
-        key="session",
-        value=token,
-        httponly=True,
-        max_age=60*60*24*30,  # 30 days
-        samesite="lax",
-        secure=False,  # Railway terminates TLS — fine
-    )
+def _set_session_cookie(response: Response, token: str, remember: bool = True):
+    """Set the session cookie. If remember=True (default), the cookie persists
+    for 30 days. If remember=False, the cookie is session-only (deleted when
+    the browser closes) — this implements the 'Keep me signed in' checkbox."""
+    if remember:
+        response.set_cookie(
+            key="session",
+            value=token,
+            httponly=True,
+            max_age=60*60*24*30,  # 30 days
+            samesite="lax",
+            secure=False,  # Railway terminates TLS — fine
+        )
+    else:
+        # Session-only cookie: no max_age → deleted when browser closes
+        response.set_cookie(
+            key="session",
+            value=token,
+            httponly=True,
+            samesite="lax",
+            secure=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +301,19 @@ async def api_me(request: Request):
         "auth_provider": user.get("auth_provider", "telegram"),
         "telegram_chat_id": user.get("telegram_chat_id"),
         "is_admin": is_admin(user_identifier),
+        # Profile fields (2026-07)
+        "profile_photo_path": user.get("profile_photo_path") or "",
+        "has_photo": bool(user.get("profile_photo_path")),
+        "bio": user.get("bio") or "",
+        "job_title": user.get("job_title") or "",
+        "location": user.get("location") or "",
+        "phone": user.get("phone") or "",
+        "skills": user.get("skills") or "",
+        "experience_years": user.get("experience_years"),
+        "website": user.get("website") or "",
+        "linkedin": user.get("linkedin") or "",
+        "member_since": user.get("created_at"),
+        "last_login_at": user.get("last_login_at"),
     }
 
 
@@ -302,6 +330,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+    remember: bool = True
 
 
 @app.post("/api/auth/register")
@@ -395,7 +424,7 @@ async def api_login(req: LoginRequest, response: Response):
         raise HTTPException(401, "Invalid username/email or password.")
 
     token = create_session_for_user(user["id"])
-    _set_session_cookie(response, token)
+    _set_session_cookie(response, token, remember=req.remember)
     log_activity(user["id"], "login",
                  details={"auth_provider": user.get("auth_provider") or "email"})
     return {
@@ -440,6 +469,7 @@ class CreateAccountRequest(BaseModel):
     username: str
     password: str
     first_name: str = ""
+    remember: bool = True
 
 
 @app.post("/api/auth/email/request-code")
@@ -687,7 +717,7 @@ async def api_create_account(req: CreateAccountRequest, response: Response):
 
     # Log in the new user
     token = create_session_for_user(user["id"])
-    _set_session_cookie(response, token)
+    _set_session_cookie(response, token, remember=req.remember)
     log_activity(user["id"], "register",
                  details={"auth_provider": info["method"], "username": username})
     return {
@@ -1232,6 +1262,157 @@ async def api_download_resume(request: Request):
     if not path or not os.path.exists(path):
         raise HTTPException(404, "No resume uploaded yet.")
     return FileResponse(path, filename=os.path.basename(path))
+
+
+# ---------------------------------------------------------------------------
+# User Profile (2026-07) — profile photo, bio, professional details
+# ---------------------------------------------------------------------------
+
+class ProfileUpdateRequest(BaseModel):
+    first_name: Optional[str] = None
+    bio: Optional[str] = None
+    job_title: Optional[str] = None
+    location: Optional[str] = None
+    phone: Optional[str] = None
+    skills: Optional[str] = None
+    experience_years: Optional[int] = None
+    website: Optional[str] = None
+    linkedin: Optional[str] = None
+
+
+def _serialize_profile(target: Optional[dict]) -> dict:
+    """Serialize a user row into the profile JSON shape returned by the API."""
+    if not target:
+        return {}
+    return {
+        "user_id": target["id"],
+        "username": target.get("username"),
+        "email": target.get("email"),
+        "first_name": target.get("first_name") or "",
+        "auth_provider": target.get("auth_provider", "telegram"),
+        "profile_photo_path": target.get("profile_photo_path") or "",
+        "has_photo": bool(target.get("profile_photo_path")),
+        "bio": target.get("bio") or "",
+        "job_title": target.get("job_title") or "",
+        "location": target.get("location") or "",
+        "phone": target.get("phone") or "",
+        "skills": target.get("skills") or "",
+        "experience_years": target.get("experience_years"),
+        "website": target.get("website") or "",
+        "linkedin": target.get("linkedin") or "",
+        "member_since": target.get("created_at"),
+        "last_login_at": target.get("last_login_at"),
+    }
+
+
+@app.get("/api/user/profile")
+async def api_get_profile(request: Request):
+    """Return the full profile for the current user.
+    Used to render profile cards and the profile editor."""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    target = get_user_by_id(user["id"])
+    if not target:
+        raise HTTPException(404, "User not found")
+    return _serialize_profile(target)
+
+
+@app.put("/api/user/profile")
+async def api_update_profile(req: ProfileUpdateRequest, request: Request):
+    """Update editable profile fields. Only the fields provided in the body
+    are updated; others are left untouched."""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    # Build kwargs dict from non-None fields
+    data = {k: v for k, v in req.dict().items() if v is not None}
+    # Validate lengths
+    if "bio" in data and len(data["bio"] or "") > 2000:
+        raise HTTPException(400, "Bio is too long (max 2000 characters).")
+    if "skills" in data and len(data["skills"] or "") > 500:
+        raise HTTPException(400, "Skills field is too long (max 500 characters).")
+    for url_field in ("website", "linkedin"):
+        if url_field in data and data[url_field]:
+            v = (data[url_field] or "").strip()
+            if v and not (v.startswith("http://") or v.startswith("https://")):
+                # Auto-prepend https://
+                data[url_field] = "https://" + v
+    if "experience_years" in data and data["experience_years"] is not None:
+        try:
+            v = int(data["experience_years"])
+            if v < 0 or v > 80:
+                raise ValueError()
+            data["experience_years"] = v
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Experience years must be a number between 0 and 80.")
+    if not data:
+        # Nothing to update — return current profile
+        target = get_user_by_id(user["id"])
+        return {"ok": True, "message": "Nothing to update.", "profile": _serialize_profile(target)}
+    update_user_profile(user["id"], **data)
+    log_activity(user["id"], "profile_update", entity_type="profile", details=data)
+    # Re-fetch and return the updated profile
+    target = get_user_by_id(user["id"])
+    return {"ok": True, "message": "Profile updated!", "profile": _serialize_profile(target)}
+
+
+@app.post("/api/user/photo")
+async def api_upload_photo(request: Request, file: UploadFile = File(...)):
+    """Upload a profile photo. Accepts PNG, JPG, JPEG, GIF, WEBP. Max 5 MB.
+    Stored locally under the upload directory."""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    filename = file.filename or "photo.bin"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in allowed:
+        raise HTTPException(400, f"Only PNG, JPG, JPEG, GIF, WEBP allowed. Got: {ext or '(none)'}")
+    content = await file.read()
+    max_size = 5 * 1024 * 1024  # 5 MB
+    if len(content) > max_size:
+        raise HTTPException(413, "Photo too large. Max 5 MB.")
+    # Use a separate subdir for profile photos
+    photo_dir = os.path.join(settings.UPLOAD_DIR, "photos")
+    os.makedirs(photo_dir, exist_ok=True)
+    safe_name = f"user_{user['id']}_photo{ext}"
+    target_path = os.path.join(photo_dir, safe_name)
+    with open(target_path, "wb") as f:
+        f.write(content)
+    set_profile_photo_path(user["id"], target_path)
+    log_activity(user["id"], "photo_upload", entity_type="profile",
+                 details={"filename": filename, "size_bytes": len(content)})
+    return {"ok": True, "filename": safe_name, "size_bytes": len(content), "path": target_path}
+
+
+@app.get("/api/user/photo")
+async def api_serve_my_photo(request: Request):
+    """Serve the current user's profile photo."""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    path = user.get("profile_photo_path") or ""
+    if not path or not os.path.exists(path):
+        raise HTTPException(404, "No profile photo uploaded.")
+    return FileResponse(path)
+
+
+@app.delete("/api/user/photo")
+async def api_delete_photo(request: Request):
+    """Remove the current user's profile photo."""
+    user = await get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    old = user.get("profile_photo_path") or ""
+    set_profile_photo_path(user["id"], "")
+    if old and os.path.exists(old):
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+    log_activity(user["id"], "photo_delete", entity_type="profile")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

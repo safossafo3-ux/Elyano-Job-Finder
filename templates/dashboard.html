@@ -765,14 +765,328 @@
     .login-card h2 { font-size: 19px; }
     button.primary { font-size: 13px; padding: 10px 16px; }
   }
+
+  /* ============================================================
+     SPLASH SCREEN (2026-07) — logo + tagline, auto-fades after 2.5s
+     Shows once per browser session (sessionStorage flag).
+     ============================================================ */
+  .splash-overlay {
+    position: fixed; inset: 0;
+    z-index: 5000;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background-color: #0a1628;
+    background-image:
+      radial-gradient(ellipse 900px 500px at 12% -5%, rgba(34, 211, 238, 0.22), transparent 60%),
+      radial-gradient(ellipse 800px 700px at 95% 105%, rgba(99, 102, 241, 0.24), transparent 60%),
+      linear-gradient(135deg, #0a1628 0%, #0d1f3a 45%, #0b1530 100%);
+    background-attachment: fixed;
+    cursor: pointer;
+    transition: opacity 0.7s ease, visibility 0.7s ease;
+  }
+  .splash-overlay.hide { opacity: 0; visibility: hidden; pointer-events: none; }
+  .splash-logo {
+    width: 150px; height: 150px;
+    border-radius: 30px;
+    object-fit: cover;
+    box-shadow: 0 12px 50px rgba(34, 211, 238, 0.45),
+                0 0 0 1px rgba(34, 211, 238, 0.3);
+    animation: splashLogoIn 0.9s cubic-bezier(0.16, 1, 0.3, 1) both,
+               splashLogoPulse 2.4s ease-in-out 0.9s infinite;
+  }
+  @keyframes splashLogoIn {
+    from { transform: scale(0.4) translateY(20px); opacity: 0; }
+    to   { transform: scale(1) translateY(0); opacity: 1; }
+  }
+  @keyframes splashLogoPulse {
+    0%, 100% { box-shadow: 0 12px 50px rgba(34, 211, 238, 0.45), 0 0 0 1px rgba(34, 211, 238, 0.3); }
+    50%      { box-shadow: 0 16px 60px rgba(99, 102, 241, 0.55), 0 0 0 2px rgba(129, 140, 248, 0.4); }
+  }
+  .splash-title {
+    margin-top: 28px;
+    font-size: 34px; font-weight: 800;
+    background: linear-gradient(135deg, #22d3ee, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.5px;
+    animation: splashFadeUp 0.8s ease 0.35s both;
+  }
+  .splash-tagline {
+    margin-top: 10px;
+    color: #94a3b8;
+    font-size: 15px;
+    font-weight: 400;
+    text-align: center;
+    max-width: 420px;
+    padding: 0 20px;
+    line-height: 1.5;
+    animation: splashFadeUp 0.8s ease 0.6s both;
+  }
+  .splash-tagline b { color: #22d3ee; font-weight: 600; }
+  .splash-loader {
+    margin-top: 36px;
+    width: 180px; height: 3px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 999px;
+    overflow: hidden;
+    animation: splashFadeUp 0.8s ease 0.8s both;
+  }
+  .splash-loader::after {
+    content: '';
+    display: block; height: 100%;
+    background: linear-gradient(90deg, #22d3ee, #818cf8);
+    border-radius: 999px;
+    animation: splashLoader 2.2s ease 0.9s forwards;
+  }
+  @keyframes splashLoader { from { width: 0; } to { width: 100%; } }
+  @keyframes splashFadeUp {
+    from { transform: translateY(14px); opacity: 0; }
+    to   { transform: translateY(0); opacity: 1; }
+  }
+  .splash-hint {
+    position: absolute; bottom: 24px;
+    color: #475569; font-size: 12px;
+    animation: splashFadeUp 0.8s ease 1.2s both;
+  }
+  @media (max-width: 480px) {
+    .splash-logo { width: 110px; height: 110px; border-radius: 22px; }
+    .splash-title { font-size: 26px; margin-top: 20px; }
+    .splash-tagline { font-size: 13px; margin-top: 8px; }
+  }
+
+  /* ============================================================
+     REDESIGNED LOGIN (2026-07) — Welcome screen with 4 buttons
+     ============================================================ */
+  .login-welcome {
+    font-size: 26px; font-weight: 800;
+    background: linear-gradient(135deg, #22d3ee, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 4px;
+    line-height: 1.2;
+  }
+  .login-subtitle {
+    color: #94a3b8; font-size: 13px;
+    margin-bottom: 22px;
+  }
+  .login-input {
+    width: 100%;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #e6e6e6;
+    padding: 13px 14px;
+    border-radius: 10px;
+    font-size: 15px;
+    margin-bottom: 10px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .login-input:focus {
+    outline: none;
+    border-color: rgba(34, 211, 238, 0.6);
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+  }
+  .login-input::placeholder { color: #64748b; }
+  .login-row {
+    display: flex; gap: 10px; flex-wrap: wrap;
+  }
+  .login-row > button { flex: 1; min-width: 130px; }
+  .login-divider {
+    display: flex; align-items: center;
+    margin: 18px 0;
+    color: #475569; font-size: 12px;
+  }
+  .login-divider::before, .login-divider::after {
+    content: ''; flex: 1; height: 1px;
+    background: rgba(255,255,255,0.08);
+  }
+  .login-divider span { padding: 0 14px; }
+  .btn-gmail {
+    background: #fff; color: #1f2937;
+    border: 1px solid rgba(0,0,0,0.1);
+  }
+  .btn-gmail:hover { background: #f8fafc; box-shadow: 0 4px 16px rgba(255,255,255,0.15); }
+  .btn-telegram {
+    background: linear-gradient(135deg, #2aabee, #229ed9);
+    color: #fff; border: none;
+  }
+  .btn-telegram:hover { box-shadow: 0 4px 16px rgba(42, 171, 238, 0.4); }
+  .btn-google-icon, .btn-tg-icon {
+    display: inline-block; width: 18px; height: 18px;
+    vertical-align: -4px; margin-right: 8px;
+  }
+  .keep-signed-in {
+    display: flex; align-items: center; gap: 8px;
+    margin: 4px 0 16px;
+    color: #94a3b8; font-size: 13px;
+    cursor: pointer; user-select: none;
+  }
+  .keep-signed-in input { width: 16px; height: 16px; accent-color: #22d3ee; cursor: pointer; }
+  .login-back-link {
+    display: inline-block; margin-bottom: 14px;
+    color: #22d3ee; font-size: 13px; cursor: pointer;
+    text-decoration: none;
+  }
+  .login-back-link:hover { text-decoration: underline; }
+  .signup-chooser {
+    text-align: center;
+  }
+  .signup-chooser .choice-btn {
+    display: flex; align-items: center; gap: 14px;
+    width: 100%; padding: 16px 18px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    color: #e6e6e6; font-size: 15px; font-weight: 500;
+    cursor: pointer; margin-bottom: 10px;
+    transition: all 0.15s; text-align: left;
+  }
+  .signup-chooser .choice-btn:hover {
+    background: rgba(34, 211, 238, 0.08);
+    border-color: rgba(34, 211, 238, 0.3);
+    transform: translateX(2px);
+  }
+  .signup-chooser .choice-btn .choice-emoji { font-size: 24px; }
+  .signup-chooser .choice-btn .choice-text { flex: 1; }
+  .signup-chooser .choice-btn .choice-text b { display: block; color: #fff; font-size: 15px; margin-bottom: 2px; }
+  .signup-chooser .choice-btn .choice-text small { color: #94a3b8; font-size: 12px; }
+
+  /* ============================================================
+     PROFILE TAB (2026-07)
+     ============================================================ */
+  .profile-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 24px;
+    padding: 24px;
+  }
+  @media (max-width: 760px) {
+    .profile-grid { grid-template-columns: 1fr; }
+  }
+  .profile-photo-section {
+    text-align: center;
+  }
+  .profile-photo-wrap {
+    position: relative;
+    width: 180px; height: 180px;
+    margin: 0 auto 16px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(34,211,238,0.15), rgba(99,102,241,0.15));
+    border: 3px solid rgba(34, 211, 238, 0.4);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  }
+  .profile-photo-wrap img {
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  .profile-photo-placeholder {
+    font-size: 64px; color: #475569;
+  }
+  .profile-photo-actions {
+    display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .profile-name {
+    font-size: 20px; font-weight: 700; color: #fff;
+    margin-bottom: 4px;
+  }
+  .profile-username {
+    color: #22d3ee; font-size: 14px; margin-bottom: 4px;
+  }
+  .provider-badge {
+    display: inline-block;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .provider-badge.email { background: rgba(34,211,238,0.15); color: #22d3ee; }
+  .provider-badge.telegram { background: rgba(42,171,238,0.15); color: #2aabee; }
+  .provider-badge.google { background: rgba(255,255,255,0.1); color: #fff; }
+  .profile-form-section h3 {
+    color: #f1f5f9; font-size: 16px; margin-bottom: 14px;
+    padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .profile-field {
+    margin-bottom: 14px;
+  }
+  .profile-field label {
+    display: block; color: #94a3b8; font-size: 12px;
+    margin-bottom: 5px; font-weight: 500;
+  }
+  .profile-field input, .profile-field textarea {
+    width: 100%;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #e6e6e6;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color 0.15s;
+  }
+  .profile-field input:focus, .profile-field textarea:focus {
+    outline: none;
+    border-color: rgba(34, 211, 238, 0.5);
+  }
+  .profile-field textarea { resize: vertical; min-height: 90px; }
+  .profile-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 540px) { .profile-field-row { grid-template-columns: 1fr; } }
+  .profile-save-row {
+    display: flex; gap: 10px; align-items: center;
+    margin-top: 20px; flex-wrap: wrap;
+  }
+  .cv-upload-zone {
+    border: 2px dashed rgba(255,255,255,0.12);
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    background: rgba(0,0,0,0.2);
+    margin-top: 8px;
+  }
+  .cv-upload-zone .cv-status {
+    color: #94a3b8; font-size: 13px; margin-top: 8px;
+  }
+  .cv-upload-zone .cv-status b { color: #22d3ee; }
+  .header-avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid rgba(34, 211, 238, 0.4);
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .header-avatar-placeholder {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #22d3ee, #818cf8);
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #0a1628; font-weight: 700; font-size: 14px;
+    margin-right: 4px; vertical-align: middle;
+    border: 2px solid rgba(34, 211, 238, 0.4);
+  }
 </style>
 </head>
 <body>
 
+<!-- ============== SPLASH SCREEN ============== -->
+<!-- Shows logo + tagline for ~2.5s on first visit per browser session.
+     Click anywhere to skip. Uses sessionStorage so it only shows once
+     per tab session (not on every page navigation). -->
+<div class="splash-overlay" id="splashOverlay" onclick="hideSplash()">
+  <img src="/static/logo.png" alt="Elyano Job Finder logo" class="splash-logo">
+  <div class="splash-title">Elyano Job Finder</div>
+  <div class="splash-tagline">Your <b>Job</b> being sent to Your hands</div>
+  <div class="splash-loader"></div>
+  <div class="splash-hint">tap to skip</div>
+</div>
+
 <!-- ============== HEADER ============== -->
 <header class="glass">
-  <div>
-    <h1>📡 JobRadar <span class="subtitle">— Global</span></h1>
+  <div style="display:flex; align-items:center; gap:12px;">
+    <img src="/static/logo.png" alt="logo" style="width:38px; height:38px; border-radius:9px; box-shadow:0 4px 12px rgba(34,211,238,0.3);">
+    <h1>Elyano Job Finder <span class="subtitle">— Global</span></h1>
   </div>
   <div class="header-right">
     <div class="stat-pill glass">📊 Total: <b>{{ stats.total }}</b></div>
@@ -784,50 +1098,111 @@
 </header>
 
 <!-- ============== LOGIN OVERLAY ============== -->
+<!-- Redesigned (2026-07): single welcome screen with Login / Sign up /
+     Gmail / Telegram buttons. Registration flows slide in via showLoginView(). -->
 <div class="login-overlay" id="loginOverlay" style="display:none;">
   <div class="login-card glass">
-    <!-- Auth method tabs: Sign in (returning) | Email (register) | Telegram (register) -->
-    <div class="auth-tabs" id="authTabs">
-      <button class="auth-tab active" data-method="signin" onclick="switchAuthMethod('signin')">🔑 Sign in</button>
-      <button class="auth-tab" data-method="email" onclick="switchAuthMethod('email')">📧 Register · Email</button>
-      <button class="auth-tab" data-method="telegram" onclick="switchAuthMethod('telegram')">💬 Register · Telegram</button>
+
+    <!-- ============ MAIN WELCOME VIEW (default) ============ -->
+    <div id="loginMain" class="auth-panel">
+      <img src="/static/logo.png" alt="logo" style="width:72px; height:72px; border-radius:16px; margin:0 auto 14px; display:block; box-shadow:0 6px 24px rgba(34,211,238,0.35);">
+      <div class="login-welcome">Welcome to Elyano Job Finder</div>
+      <div class="login-subtitle">Your Job being sent to Your hands — sign in or create an account.</div>
+
+      <input type="text" class="login-input" id="signinIdentifierInput"
+             placeholder="username or email"
+             autocomplete="username" autocapitalize="none" spellcheck="false">
+      <input type="password" class="login-input" id="signinPasswordInput"
+             placeholder="password"
+             autocomplete="current-password">
+
+      <label class="keep-signed-in">
+        <input type="checkbox" id="keepSignedIn" checked>
+        <span>Keep me signed in</span>
+      </label>
+
+      <div class="login-row">
+        <button class="primary" id="signinSubmitBtn" onclick="submitSignin()">Login →</button>
+        <button class="ghost" onclick="showLoginView('signup')">Sign up</button>
+      </div>
+
+      <div class="login-divider"><span>or continue with</span></div>
+
+      <div class="login-row">
+        {% if google_oauth_enabled %}
+        <button class="btn-gmail" onclick="loginWithGmail()">
+          <svg class="btn-google-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+          </svg>
+          Gmail
+        </button>
+        {% else %}
+        <button class="btn-gmail" onclick="loginWithGmail()" title="Register / sign in with your email address">
+          <svg class="btn-google-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+          </svg>
+          Gmail
+        </button>
+        {% endif %}
+        <button class="btn-telegram" onclick="showLoginView('telegram')">
+          <svg class="btn-tg-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/>
+          </svg>
+          Telegram
+        </button>
+      </div>
+
+      <p style="margin-top:18px; font-size:11px; color:#64748b; line-height:1.5;">
+        New here? Tap <b>Sign up</b> to create an account with email or Telegram.
+      </p>
     </div>
 
-    <!-- ============ SIGN IN (returning users: username/email + password) ============ -->
-    <div id="authSignin" class="auth-panel">
-      <h2 id="signinTitle">🔐 Welcome back</h2>
-      <p id="signinSubtitle">Sign in with your username (or email) and password.</p>
-
-      <input type="text" class="username-input" id="signinIdentifierInput"
-             placeholder="username OR email"
-             autocomplete="username" autocapitalize="none" spellcheck="false"
-             style="margin-bottom:10px;">
-
-      <input type="password" class="username-input" id="signinPasswordInput"
-             placeholder="password"
-             autocomplete="current-password"
-             style="margin-bottom:6px;">
-
-      <div class="login-actions">
-        <button class="primary" id="signinSubmitBtn" onclick="submitSignin()">Sign in →</button>
+    <!-- ============ SIGN UP CHOOSER (shown when "Sign up" is clicked) ============ -->
+    <div id="loginSignup" class="auth-panel" style="display:none;">
+      <a class="login-back-link" onclick="showLoginView('main')">← Back to login</a>
+      <h2 style="font-size:22px; margin-bottom:6px;">Create your account</h2>
+      <p style="color:#94a3b8; font-size:13px; margin-bottom:20px;">Choose how you'd like to register:</p>
+      <div class="signup-chooser">
+        <button class="choice-btn" onclick="showLoginView('email')">
+          <span class="choice-emoji">📧</span>
+          <span class="choice-text">
+            <b>Register with Email</b>
+            <small>We'll send a 6-digit code to your inbox to verify it.</small>
+          </span>
+          <span style="color:#475569;">→</span>
+        </button>
+        <button class="choice-btn" onclick="showLoginView('telegram')">
+          <span class="choice-emoji">💬</span>
+          <span class="choice-text">
+            <b>Register with Telegram</b>
+            <small>Type your @username — our bot DMs you the code.</small>
+          </span>
+          <span style="color:#475569;">→</span>
+        </button>
       </div>
-      <p style="margin-top:12px; font-size:11px; color:#64748b;" id="signinHint">
-        New here? Use <b>Register · Email</b> or <b>Register · Telegram</b> above to create an account.
+      <p style="margin-top:18px; font-size:11px; color:#64748b; line-height:1.5;">
+        After verifying, you'll choose a <b>username</b> and <b>password</b> to sign in next time.
       </p>
     </div>
 
     <!-- ============ REGISTER VIA EMAIL (email → code → set credentials) ============ -->
-    <div id="authEmail" class="auth-panel" style="display:none;">
+    <div id="loginEmail" class="auth-panel" style="display:none;">
+      <a class="login-back-link" onclick="showLoginView('signup')">← Back</a>
       <!-- Step 1: enter email -->
       <div id="emailStep1">
-        <h2>📧 Register with Email</h2>
-        <p>Enter your email — we'll send you a 6-digit code to verify it's really you.</p>
-        <input type="email" class="username-input" id="emailRegisterInput"
+        <h2 style="font-size:22px;">📧 Register with Email</h2>
+        <p style="color:#94a3b8; font-size:13px; margin-bottom:16px;">Enter your email — we'll send you a 6-digit code to verify it's really you.</p>
+        <input type="email" class="login-input" id="emailRegisterInput"
                placeholder="your@email.com"
-               autocomplete="email" autocapitalize="none" spellcheck="false"
-               style="margin-bottom:10px;">
+               autocomplete="email" autocapitalize="none" spellcheck="false">
         <div class="login-actions">
-          <button class="primary" id="emailRegisterBtn" onclick="requestEmailCode()">Send me a code →</button>
+          <button class="primary" id="emailRegisterBtn" onclick="requestEmailCode()" style="width:100%;">Send me a code →</button>
         </div>
         <p style="margin-top:12px; font-size:11px; color:#64748b;">
           After verifying your email, you'll choose a username and password to finish.
@@ -836,11 +1211,11 @@
 
       <!-- Step 2: enter code -->
       <div id="emailStep2" style="display:none;">
-        <h2>📲 Enter the code</h2>
-        <p id="emailCodeSentMsg">A 6-digit code was sent to your email.</p>
-        <input type="text" class="username-input" id="emailCodeInput"
+        <h2 style="font-size:22px;">📲 Enter the code</h2>
+        <p id="emailCodeSentMsg" style="color:#94a3b8; font-size:13px; margin-bottom:16px;">A 6-digit code was sent to your email.</p>
+        <input type="text" class="login-input" id="emailCodeInput"
                placeholder="••••••" maxlength="6" inputmode="numeric"
-               autocomplete="one-time-code" style="margin-bottom:10px;">
+               autocomplete="one-time-code" style="text-align:center; letter-spacing:8px; font-size:22px; font-family:monospace;">
         <div class="login-actions">
           <button class="login-back-btn" onclick="backToEmailStep1()">← Back</button>
           <button class="primary" id="emailVerifyBtn" onclick="verifyEmailCode()">Verify code →</button>
@@ -853,20 +1228,19 @@
 
       <!-- Step 3: set username + password -->
       <div id="emailStep3" style="display:none;">
-        <h2>✅ Almost done!</h2>
-        <p>Choose a username and password for your account.</p>
-        <input type="text" class="username-input" id="emailUsernameInput"
+        <h2 style="font-size:22px;">✅ Almost done!</h2>
+        <p style="color:#94a3b8; font-size:13px; margin-bottom:16px;">Choose a username and password for your account.</p>
+        <input type="text" class="login-input" id="emailUsernameInput"
                placeholder="choose a username (3–32 chars, letters/numbers/_/.)"
-               autocomplete="username" autocapitalize="none" spellcheck="false"
-               style="margin-bottom:10px;">
-        <input type="password" class="username-input" id="emailPasswordInput"
+               autocomplete="username" autocapitalize="none" spellcheck="false">
+        <input type="password" class="login-input" id="emailPasswordInput"
                placeholder="choose a password (min 6 characters)"
-               autocomplete="new-password" style="margin-bottom:10px;">
-        <input type="text" class="username-input" id="emailFirstNameInput"
+               autocomplete="new-password">
+        <input type="text" class="login-input" id="emailFirstNameInput"
                placeholder="your name (optional)"
-               autocomplete="name" style="margin-bottom:6px;">
+               autocomplete="name">
         <div class="login-actions">
-          <button class="primary" id="emailCreateBtn" onclick="createEmailAccount()">Create account →</button>
+          <button class="primary" id="emailCreateBtn" onclick="createEmailAccount()" style="width:100%;">Create account →</button>
         </div>
         <p style="margin-top:12px; font-size:11px; color:#64748b;">
           You'll use this username + password to sign in next time.
@@ -874,62 +1248,50 @@
       </div>
     </div>
 
-    <!-- ============ REGISTER VIA TELEGRAM (@username → code → set credentials) ============ -->
-    <div id="authTelegram" class="auth-panel" style="display:none;">
-      <!-- Step 1: open bot + enter Telegram username -->
+    <!-- ============ REGISTER / LOGIN VIA TELEGRAM (@username → code → set credentials) ============ -->
+    <div id="loginTelegram" class="auth-panel" style="display:none;">
+      <a class="login-back-link" onclick="showLoginView('main')">← Back to login</a>
+      <!-- Step 1: enter Telegram username -->
       <div id="tgStep1">
-        <h2>💬 Register with Telegram</h2>
-        <p>JobRadar sends you job alerts straight to your Telegram chat. Verify your Telegram to register.</p>
+        <h2 style="font-size:22px;">💬 Continue with Telegram</h2>
+        <p style="color:#94a3b8; font-size:13px; margin-bottom:16px;">
+          Type your <b>Telegram username</b> below. Our bot will find you and send a 6-digit code to verify.
+        </p>
 
         {% if telegram_bot_username %}
-        <a class="bot-hero" id="botHeroBtn"
-           href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
-           onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');">
-          <span class="bot-emoji">💬</span>
-          Open <b>@{{ telegram_bot_username }}</b> in Telegram
-          <span class="bot-arrow">→</span>
-        </a>
-        <div class="bot-hero-sub">
-          Tap the button → it opens the Telegram <b>app</b> with <code>@{{ telegram_bot_username | lower }}</code> written in the search bar (no spaces) → tap the bot in the results → press <b>Start</b>. The handle is also auto-copied to your clipboard — paste it into Telegram's search if needed.
-        </div>
-        <div class="bot-manual-search">
-          <span class="bot-manual-label">If the search bar isn't pre-filled, copy this exact handle:</span>
+        <div class="bot-manual-search" style="margin-bottom:14px;">
+          <span class="bot-manual-label">First time? Open the bot once so it can DM you:</span>
           <div class="bot-manual-handle-row">
             <code class="bot-manual-handle" id="botHandleText">@{{ telegram_bot_username | lower }}</code>
             <button type="button" class="bot-copy-btn" id="botCopyBtn"
                     onclick="copyBotHandle('{{ telegram_bot_username | lower }}')">Copy</button>
           </div>
-          <span class="bot-manual-hint">Open Telegram → tap the magnifying glass 🔍 → paste <code>@{{ telegram_bot_username | lower }}</code> (no spaces) → tap the bot → press <b>Start</b>.</span>
+          <a class="bot-link" id="botHeroBtn"
+             href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
+             onclick="return openTelegramApp(event, '{{ telegram_bot_username }}');"
+             style="display:block; margin-top:8px;">
+            💬 Open @{{ telegram_bot_username }} in Telegram
+          </a>
         </div>
         {% else %}
         <p style="color:#f87171; font-size:12px;">
-          ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set on the server. Set it so the registration link works.
+          ⚠️ <code>TELEGRAM_BOT_USERNAME</code> not set on the server.
         </p>
         {% endif %}
 
-        <div class="login-steps">
-          <ol>
-            <li>Tap <b>"Open @{{ telegram_bot_username or 'bot' }} in Telegram"</b> above</li>
-            <li>Press <b>Start</b> in Telegram (this lets us DM you)</li>
-            <li>Come back here and type your <b>Telegram username</b></li>
-            <li>Tap <b>"Send me a code"</b> — the bot DMs you a 6-digit code</li>
-            <li>Type the code, then choose a username + password for sign-in</li>
-          </ol>
-        </div>
-
-        <input type="text" class="username-input" id="usernameInput"
-               placeholder="your Telegram username (no @)"
+        <input type="text" class="login-input" id="usernameInput"
+               placeholder="@your_telegram_username"
                autocomplete="username" autocapitalize="none" spellcheck="false">
 
         <div class="login-actions">
-          <button class="primary" id="requestCodeBtn" onclick="requestTelegramCode()">Send me a code →</button>
+          <button class="primary" id="requestCodeBtn" onclick="requestTelegramCode()" style="width:100%;">Send me a code →</button>
         </div>
 
         <div id="loginNeedsStart" style="display:none; margin-top:18px; padding:14px; background:rgba(34,211,238,0.08); border:1px solid rgba(34,211,238,0.3); border-radius:10px;">
           <div style="color:#22d3ee; font-size:14px; font-weight:600; margin-bottom:6px;">👋 First-time here?</div>
           <p style="color:#cbd5e1; font-size:13px; line-height:1.5; margin-bottom:10px;">
             You need to open the bot once in Telegram and press <b>Start</b> so it can send you messages.
-            Tap the button below to open the bot in Telegram.
+            Tap the button below to open the bot in Telegram — it will <b>automatically send you the code</b> the moment you press Start.
           </p>
           <a class="bot-link" id="deepLinkBtn"
              href="tg://search?query=%40{{ telegram_bot_username | lower }}%20"
@@ -938,22 +1300,21 @@
             💬 Open @{{ telegram_bot_username }} in Telegram
           </a>
           <p style="margin-top:10px; font-size:11px; color:#64748b;">
-            After pressing <b>Start</b> in Telegram, come back here and click "Send me a code" again — your
-            code will arrive in Telegram in seconds.
+            After pressing <b>Start</b>, your code arrives in Telegram instantly — no need to click "Send me a code" again.
           </p>
         </div>
         <p style="margin-top:14px; font-size:11px; color:#64748b;">
-          💡 Tip: your Telegram username is in <b>Settings → Username</b> in the Telegram app. No <code>@</code> needed.
+          💡 Tip: your Telegram username is in <b>Settings → Username</b> in the Telegram app. The <code>@</code> prefix is optional.
         </p>
       </div>
 
       <!-- Step 2: enter code -->
       <div id="tgStep2" style="display:none;">
-        <h2>📲 Enter your code</h2>
-        <p id="tgCodeSentMsg">A 6-digit code was sent to your Telegram chat.</p>
-        <input type="text" class="username-input" id="tgCodeInput"
+        <h2 style="font-size:22px;">📲 Enter your code</h2>
+        <p id="tgCodeSentMsg" style="color:#94a3b8; font-size:13px; margin-bottom:16px;">A 6-digit code was sent to your Telegram chat.</p>
+        <input type="text" class="login-input" id="tgCodeInput"
                placeholder="••••••" maxlength="6" inputmode="numeric"
-               autocomplete="one-time-code" style="margin-bottom:10px;">
+               autocomplete="one-time-code" style="text-align:center; letter-spacing:8px; font-size:22px; font-family:monospace;">
         <div class="login-actions">
           <button class="login-back-btn" onclick="backToTgStep1()">← Back</button>
           <button class="primary" id="tgVerifyBtn" onclick="verifyTelegramCode()">Verify code →</button>
@@ -966,26 +1327,26 @@
 
       <!-- Step 3: set username + password -->
       <div id="tgStep3" style="display:none;">
-        <h2>✅ Almost done!</h2>
-        <p>Choose a username and password for your account.</p>
-        <input type="text" class="username-input" id="tgUsernameInput"
+        <h2 style="font-size:22px;">✅ Almost done!</h2>
+        <p style="color:#94a3b8; font-size:13px; margin-bottom:16px;">Choose a username and password for your account.</p>
+        <input type="text" class="login-input" id="tgUsernameInput"
                placeholder="choose a username (3–32 chars, letters/numbers/_/.)"
-               autocomplete="username" autocapitalize="none" spellcheck="false"
-               style="margin-bottom:10px;">
-        <input type="password" class="username-input" id="tgPasswordInput"
+               autocomplete="username" autocapitalize="none" spellcheck="false">
+        <input type="password" class="login-input" id="tgPasswordInput"
                placeholder="choose a password (min 6 characters)"
-               autocomplete="new-password" style="margin-bottom:10px;">
-        <input type="text" class="username-input" id="tgFirstNameInput"
+               autocomplete="new-password">
+        <input type="text" class="login-input" id="tgFirstNameInput"
                placeholder="your name (optional)"
-               autocomplete="name" style="margin-bottom:6px;">
+               autocomplete="name">
         <div class="login-actions">
-          <button class="primary" id="tgCreateBtn" onclick="createTelegramAccount()">Create account →</button>
+          <button class="primary" id="tgCreateBtn" onclick="createTelegramAccount()" style="width:100%;">Create account →</button>
         </div>
         <p style="margin-top:12px; font-size:11px; color:#64748b;">
           You'll use this username + password to sign in next time. (Your Telegram stays linked for job alerts.)
         </p>
       </div>
     </div>
+
   </div>
 </div>
 
@@ -1022,6 +1383,7 @@
   <!-- Phase 2/3 Tab Navigation -->
   <div class="phase2-tabs glass" id="phase2Tabs" style="display:none;">
     <button class="p2-tab active" data-tab="scan" onclick="switchTab('scan')">🔍 Scan</button>
+    <button class="p2-tab" data-tab="profile" onclick="switchTab('profile')">👤 Profile</button>
     <button class="p2-tab" data-tab="favorites" onclick="switchTab('favorites')">⭐ Favorites</button>
     <button class="p2-tab" data-tab="applications" onclick="switchTab('applications')">📝 Applications</button>
     <button class="p2-tab" data-tab="saved" onclick="switchTab('saved')">💾 Saved Searches</button>
@@ -1100,6 +1462,103 @@
     <div id="jobsTable"></div>
   </div>
   </div><!-- /tab-scan -->
+
+  <!-- Profile Tab (2026-07) -->
+  <div class="p2-panel" id="tab-profile" style="display:none;">
+    <div class="jobs-section glass" style="padding:0;">
+      <div class="profile-grid">
+        <!-- LEFT: photo + identity -->
+        <div class="profile-photo-section">
+          <div class="profile-photo-wrap" id="profilePhotoWrap">
+            <span class="profile-photo-placeholder" id="profilePhotoPlaceholder">👤</span>
+            <img id="profilePhotoImg" src="" alt="profile photo" style="display:none;">
+          </div>
+          <div class="profile-photo-actions">
+            <input type="file" id="photoFileInput" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp" style="display:none;" onchange="uploadProfilePhoto()">
+            <button class="primary" onclick="document.getElementById('photoFileInput').click()">📤 Upload photo</button>
+            <button class="ghost" id="removePhotoBtn" onclick="removeProfilePhoto()" style="display:none;">🗑 Remove</button>
+          </div>
+          <div class="profile-name" id="profileDisplayName">—</div>
+          <div class="profile-username" id="profileDisplayUsername">—</div>
+          <div id="profileProviderBadge"></div>
+          <div style="color:#64748b; font-size:12px; line-height:1.6;">
+            <div id="profileMemberSince">Member since: —</div>
+            <div id="profileLastLogin">Last login: —</div>
+          </div>
+          <hr style="border:0; border-top:1px solid rgba(255,255,255,0.06); margin:16px 0;">
+          <div style="text-align:left;">
+            <div style="color:#94a3b8; font-size:11px; margin-bottom:6px;">QUICK LINKS</div>
+            <a href="#" onclick="switchTab('settings'); return false;" style="display:block; color:#22d3ee; font-size:13px; padding:4px 0;">⚙️ Notification settings</a>
+            <a href="#" onclick="switchTab('saved'); return false;" style="display:block; color:#22d3ee; font-size:13px; padding:4px 0;">💾 Saved searches</a>
+            <a href="#" onclick="logout(); return false;" style="display:block; color:#f87171; font-size:13px; padding:4px 0; margin-top:8px;">🚪 Log out</a>
+          </div>
+        </div>
+
+        <!-- RIGHT: editable form -->
+        <div class="profile-form-section">
+          <h3>👤 About You</h3>
+          <div class="profile-field-row">
+            <div class="profile-field">
+              <label>Full name</label>
+              <input type="text" id="profileFirstName" placeholder="e.g. Mustafa Ahmed" autocomplete="name" maxlength="100">
+            </div>
+            <div class="profile-field">
+              <label>Job title</label>
+              <input type="text" id="profileJobTitle" placeholder="e.g. Delivery Driver" maxlength="100">
+            </div>
+          </div>
+          <div class="profile-field-row">
+            <div class="profile-field">
+              <label>Location (city, country)</label>
+              <input type="text" id="profileLocation" placeholder="e.g. Cairo, Egypt" maxlength="120">
+            </div>
+            <div class="profile-field">
+              <label>Phone</label>
+              <input type="tel" id="profilePhone" placeholder="e.g. +20 100 123 4567" maxlength="30">
+            </div>
+          </div>
+          <div class="profile-field">
+            <label>Bio — tell employers who you are (max 2000 chars)</label>
+            <textarea id="profileBio" placeholder="I'm a hardworking driver with 5 years of experience across the Balkans. I speak English, Arabic, and basic German. Looking for long-haul roles in Germany or Austria." maxlength="2000"></textarea>
+          </div>
+          <div class="profile-field">
+            <label>Skills — comma-separated (max 500 chars)</label>
+            <input type="text" id="profileSkills" placeholder="e.g. forklift, CDL, customer service, English, Arabic" maxlength="500">
+          </div>
+          <div class="profile-field-row">
+            <div class="profile-field">
+              <label>Experience (years)</label>
+              <input type="number" id="profileExperienceYears" placeholder="e.g. 5" min="0" max="80">
+            </div>
+            <div class="profile-field">
+              <label>Website</label>
+              <input type="url" id="profileWebsite" placeholder="https://your-site.com" maxlength="200">
+            </div>
+          </div>
+          <div class="profile-field">
+            <label>LinkedIn</label>
+            <input type="url" id="profileLinkedin" placeholder="https://linkedin.com/in/you" maxlength="200">
+          </div>
+          <div class="profile-save-row">
+            <button class="primary" id="profileSaveBtn" onclick="saveProfile()">💾 Save profile</button>
+            <button class="ghost" onclick="loadProfile()">↻ Reload</button>
+            <span id="profileSaveStatus" style="color:#64748b; font-size:12px;"></span>
+          </div>
+
+          <hr style="border:0; border-top:1px solid rgba(255,255,255,0.06); margin:28px 0 20px;">
+
+          <h3>📄 Your CV / Resume</h3>
+          <div class="cv-upload-zone">
+            <input type="file" id="resumeFile" accept=".pdf,.doc,.docx" style="display:none;" onchange="uploadResume()">
+            <button class="primary" onclick="document.getElementById('resumeFile').click()">📤 Upload CV</button>
+            <button class="ghost" onclick="downloadResume()" style="margin-left:8px;">⬇️ Download</button>
+            <div class="cv-status" id="cvStatus">No CV uploaded yet.</div>
+            <p style="color:#475569; font-size:11px; margin-top:8px;">PDF, DOC, or DOCX. Max 5 MB.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Favorites Tab -->
   <div class="p2-panel" id="tab-favorites" style="display:none;">
@@ -1191,12 +1650,9 @@
       <h3 style="color:#f1f5f9; margin-bottom:12px; font-size:16px;">📄 Resume / CV</h3>
       <div style="padding:0 20px 20px; color:#cbd5e1;">
         <p style="font-size:13px; color:#94a3b8; margin-bottom:12px;">
-          Upload your CV so you can quickly apply to jobs from the dashboard. PDF, DOC, or DOCX. Max 5 MB.
+          Your CV/resume and profile photo are managed in the Profile tab.
         </p>
-        <input type="file" id="resumeFile" accept=".pdf,.doc,.docx" style="display:none;" onchange="uploadResume()">
-        <button class="primary" onclick="document.getElementById('resumeFile').click()">📤 Upload resume</button>
-        <button class="ghost" onclick="downloadResume()" style="margin-left:8px;">⬇️ Download current</button>
-        <div id="resumeStatus" style="margin-top:12px; font-size:13px; color:#94a3b8;"></div>
+        <button class="ghost" onclick="switchTab('profile')">👤 Go to Profile →</button>
       </div>
     </div>
   </div>
@@ -1357,9 +1813,38 @@ async function copyBotHandle(botUsername) {
 }
 
 // ============================================================
+// Splash screen — shows once per browser session, auto-fades after 2.5s.
+// Click anywhere (or call hideSplash) to skip immediately.
+// ============================================================
+function initSplash() {
+  const splash = document.getElementById('splashOverlay');
+  if (!splash) return;
+  // If already shown this session, hide immediately and skip
+  if (sessionStorage.getItem('elyano_splash_seen')) {
+    splash.style.display = 'none';
+    return;
+  }
+  // Auto-hide after 2.6s
+  setTimeout(() => { hideSplash(); }, 2600);
+}
+
+function hideSplash() {
+  const splash = document.getElementById('splashOverlay');
+  if (!splash) return;
+  if (splash.classList.contains('hide')) return;  // already hiding
+  splash.classList.add('hide');
+  sessionStorage.setItem('elyano_splash_seen', '1');
+  // Remove from DOM after the CSS transition completes
+  setTimeout(() => { splash.style.display = 'none'; }, 800);
+}
+
+// ============================================================
 // Init
 // ============================================================
 async function init() {
+  // Start the splash screen countdown (non-blocking)
+  initSplash();
+
   // Capture bot username from the page (Jinja-rendered)
   {% if telegram_bot_username %}
   state.botUsername = "{{ telegram_bot_username }}";
@@ -1375,7 +1860,7 @@ async function init() {
     const err = urlParams.get('login_error');
     let msg = 'Google sign-in failed';
     if (err === 'access_denied') msg = 'You cancelled the Google sign-in';
-    else if (err === 'google_not_configured') msg = 'Google sign-in is not configured on the server';
+    else if (err === 'google_not_configured') msg = 'Google sign-in is not configured on the server — use email registration instead';
     else if (err === 'oauth_failed') msg = 'Google authentication failed — please try again';
     else if (err === 'no_email') msg = 'Google did not return an email address';
     else if (err === 'no_public_url') msg = 'Server misconfigured: WEBAPP_PUBLIC_URL is not set';
@@ -1390,11 +1875,7 @@ async function init() {
     const d = await r.json();
     if (d.authenticated) {
       state.user = d;
-      // Display email (for email/Google users) or username (for Telegram users)
-      const displayName = d.email || d.username || d.first_name || 'User';
-      const providerTag = d.auth_provider === 'google' ? '🌐' : (d.auth_provider === 'email' ? '📧' : '💬');
-      document.getElementById('userBadgeText').innerHTML =
-        `${providerTag} <b>${displayName}</b> · <a href="#" onclick="logout(); return false;" style="color:#22d3ee; margin-left:8px;">logout</a>`;
+      renderUserBadge(d);
       // Show Phase 2/3 tabs now that user is logged in
       document.getElementById('phase2Tabs').style.display = 'flex';
       // Show the Export CSV button
@@ -1427,23 +1908,8 @@ async function init() {
 
 function showLogin() {
   document.getElementById('loginOverlay').style.display = 'flex';
-  // Default to Sign in tab
-  switchAuthMethod('signin');
-  // Reset all multi-step panels
-  ['emailStep2', 'emailStep3', 'tgStep2', 'tgStep3'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = 'none';
-  });
-  ['emailStep1', 'tgStep1'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = 'block';
-  });
-  const ns = document.getElementById('loginNeedsStart');
-  if (ns) ns.style.display = 'none';
-  setTimeout(() => {
-    const signinInput = document.getElementById('signinIdentifierInput');
-    if (signinInput) signinInput.focus();
-  }, 100);
+  // Show the main welcome view by default
+  showLoginView('main');
 }
 
 // ============================================================
@@ -1504,28 +1970,86 @@ async function safeJsonFetch(url, options) {
   return { ok: true, status: r.status, data: data };
 }
 
-function switchAuthMethod(method) {
-  // Update tab buttons
-  document.querySelectorAll('.auth-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.method === method);
+// ============================================================
+// Login view switcher — replaces the old switchAuthMethod().
+// Views: 'main' (welcome) | 'signup' (chooser) | 'email' | 'telegram'
+// ============================================================
+function showLoginView(view) {
+  const views = ['main', 'signup', 'email', 'telegram'];
+  const idMap = { main: 'loginMain', signup: 'loginSignup', email: 'loginEmail', telegram: 'loginTelegram' };
+  views.forEach(v => {
+    const el = document.getElementById(idMap[v]);
+    if (el) el.style.display = (v === view) ? 'block' : 'none';
   });
-  // Show/hide panels
-  document.getElementById('authSignin').style.display  = method === 'signin'   ? 'block' : 'none';
-  document.getElementById('authEmail').style.display   = method === 'email'    ? 'block' : 'none';
-  document.getElementById('authTelegram').style.display = method === 'telegram' ? 'block' : 'none';
-  // Focus the first input
+  // Reset multi-step panels when entering email or telegram views
+  if (view === 'email' || view === 'telegram') {
+    ['emailStep2', 'emailStep3', 'tgStep2', 'tgStep3'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+    ['emailStep1', 'tgStep1'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'block';
+    });
+    const ns = document.getElementById('loginNeedsStart');
+    if (ns) ns.style.display = 'none';
+  }
+  // Focus the first input of the active view
   setTimeout(() => {
-    if (method === 'signin') {
-      const el = document.getElementById('signinIdentifierInput');
-      if (el) el.focus();
-    } else if (method === 'email') {
-      const el = document.getElementById('emailRegisterInput');
-      if (el) el.focus();
-    } else if (method === 'telegram') {
-      const el = document.getElementById('usernameInput');
+    let focusId = null;
+    if (view === 'main') focusId = 'signinIdentifierInput';
+    else if (view === 'email') focusId = 'emailRegisterInput';
+    else if (view === 'telegram') focusId = 'usernameInput';
+    if (focusId) {
+      const el = document.getElementById(focusId);
       if (el) el.focus();
     }
   }, 100);
+}
+
+// ============================================================
+// renderUserBadge — shows the user's profile photo (or initials),
+// display name, provider tag, and logout link in the header.
+// ============================================================
+function renderUserBadge(d) {
+  const displayName = d.first_name || d.email || d.username || 'User';
+  const providerTag = d.auth_provider === 'google' ? '🌐' : (d.auth_provider === 'email' ? '📧' : '💬');
+  let avatar = '';
+  if (d.has_photo) {
+    avatar = `<img src="/api/user/photo?t=${Date.now()}" class="header-avatar" alt="">`;
+  } else {
+    const initials = (displayName || '?').trim().charAt(0).toUpperCase();
+    avatar = `<span class="header-avatar-placeholder">${initials}</span>`;
+  }
+  document.getElementById('userBadgeText').innerHTML =
+    `${avatar}${providerTag} <b>${displayName}</b> · <a href="#" onclick="logout(); return false;" style="color:#22d3ee; margin-left:8px;">logout</a>`;
+}
+
+// ============================================================
+// refreshUser — re-fetches /api/me and updates the UI.
+// This was previously UNDEFINED (a bug) — calling it after login/registration
+// threw a ReferenceError, so the UI never updated and users thought the
+// action had failed. Now it reloads the page to guarantee a clean state.
+// ============================================================
+async function refreshUser() {
+  // Reload to guarantee header, tabs, and profile are all in sync.
+  location.reload();
+}
+
+// ============================================================
+// loginWithGmail — if Google OAuth is configured on the server, redirect
+// to the OAuth start endpoint. Otherwise, fall back to the email
+// registration flow (which works for any email address, including Gmail).
+// ============================================================
+function loginWithGmail() {
+  {% if google_oauth_enabled %}
+  // Google OAuth is configured — redirect to the server's OAuth start
+  window.location.href = '/api/auth/google/start';
+  {% else %}
+  // Google OAuth not configured — fall back to email registration flow
+  showToast('Google OAuth not configured on the server — using email registration instead.', 'info');
+  showLoginView('email');
+  {% endif %}
 }
 
 // ============================================================
@@ -1534,6 +2058,8 @@ function switchAuthMethod(method) {
 async function submitSignin() {
   const identifier = (document.getElementById('signinIdentifierInput').value || '').trim();
   const password = document.getElementById('signinPasswordInput').value || '';
+  const rememberEl = document.getElementById('keepSignedIn');
+  const remember = rememberEl ? rememberEl.checked : true;
   const btn = document.getElementById('signinSubmitBtn');
 
   if (!identifier) { showToast('Enter your username or email', true); return; }
@@ -1545,7 +2071,7 @@ async function submitSignin() {
     const res = await safeJsonFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: identifier, password }),
+      body: JSON.stringify({ email: identifier, password, remember }),
     });
     if (!res.ok) {
       showToast(res.error || 'Sign-in failed', true);
@@ -1559,7 +2085,7 @@ async function submitSignin() {
     showToast('Sign-in failed: ' + msg, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Sign in →';
+    btn.textContent = 'Login →';
   }
 }
 
@@ -1661,6 +2187,8 @@ async function createEmailAccount() {
   const username = (document.getElementById('emailUsernameInput').value || '').trim().replace(/^@/, '');
   const password = document.getElementById('emailPasswordInput').value || '';
   const firstName = (document.getElementById('emailFirstNameInput').value || '').trim();
+  const rememberEl = document.getElementById('keepSignedIn');
+  const remember = rememberEl ? rememberEl.checked : true;
   const btn = document.getElementById('emailCreateBtn');
 
   if (!username) { showToast('Choose a username', true); return; }
@@ -1681,6 +2209,7 @@ async function createEmailAccount() {
         username: username,
         password: password,
         first_name: firstName,
+        remember: remember,
       }),
     });
     if (!res.ok) {
@@ -1728,29 +2257,41 @@ async function requestTelegramCode(isResend) {
     }
     const d = res.data || {};
     // If the user hasn't sent /start to the bot yet, show a deep-link button
+    // that opens Telegram with ?start=reg_<username> so the bot AUTO-SENDS
+    // the registration code the moment the user presses Start — they don't
+    // have to come back and click "Send me a code" again.
     if (d.needs_start && d.deep_link) {
-      showToast(d.message || 'Open the bot in Telegram to get started.', 'info');
+      showToast(d.message || 'Open the bot in Telegram — it will auto-send your code.', 'info');
       // Show the deep-link panel
       const panel = document.getElementById('loginNeedsStart');
       if (panel) {
         panel.style.display = 'block';
         const link = document.getElementById('deepLinkBtn');
         if (link) {
-          // Extract the bot username from the backend's deep_link (or use state),
-          // then point the href at the tg://search deep-link so Telegram opens
-          // with @<bot> pre-filled in the search bar (no spaces, with @).
+          // Extract the bot username from the backend's deep_link (or use state)
           let bot = state.botUsername || 'EuropaElyano_bot';
           try {
             const u = new URL(d.deep_link);
             bot = u.pathname.replace(/^\//, '') || bot;
           } catch (e) { /* use default */ }
-          // Trailing %20 prevents Telegram from auto-resolving the @ handle
-          // and skipping straight to the bot's chat. Keeps the literal
-          // "@<bot>" text inside the search bar instead.
-          link.href = `tg://search?query=%40${bot.toLowerCase()}%20`;
+          // Use the https://t.me/<bot>?start=reg_<username> deep link so the
+          // bot receives the payload on /start and auto-sends the registration
+          // code. This is the smoothest flow: one tap → code arrives.
+          const startPayload = 'reg_' + username;
+          link.href = `https://t.me/${bot}?start=${encodeURIComponent(startPayload)}`;
           link.onclick = function (e) {
             e.preventDefault();
-            return openTelegramApp(e, bot);
+            // Open the t.me link (works on both mobile and desktop — opens
+            // the Telegram app or web client). Also copy the handle as a
+            // fallback in case the start parameter doesn't carry through.
+            try {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(`@${bot.toLowerCase()}`).catch(() => {});
+              }
+            } catch (e2) {}
+            window.open(link.href, '_blank', 'noopener');
+            showToast('Opened Telegram — press Start. Your code will arrive automatically.', 'info');
+            return false;
           };
         }
       }
@@ -1840,6 +2381,8 @@ async function createTelegramAccount() {
   const username = (document.getElementById('tgUsernameInput').value || '').trim().replace(/^@/, '');
   const password = document.getElementById('tgPasswordInput').value || '';
   const firstName = (document.getElementById('tgFirstNameInput').value || '').trim();
+  const rememberEl = document.getElementById('keepSignedIn');
+  const remember = rememberEl ? rememberEl.checked : true;
   const btn = document.getElementById('tgCreateBtn');
 
   if (!username) { showToast('Choose a username', true); return; }
@@ -1860,6 +2403,7 @@ async function createTelegramAccount() {
         username: username,
         password: password,
         first_name: firstName,
+        remember: remember,
       }),
     });
     if (!res.ok) {
@@ -1925,6 +2469,7 @@ function switchTab(tab) {
   const panel = document.getElementById('tab-' + tab);
   if (panel) panel.style.display = 'block';
   // Load data on tab open
+  if (tab === 'profile') loadProfile();
   if (tab === 'favorites') loadFavorites();
   if (tab === 'applications') loadApplications();
   if (tab === 'saved') loadSavedSearches();
@@ -1932,6 +2477,173 @@ function switchTab(tab) {
   if (tab === 'activity') loadActivity();
   if (tab === 'admin') loadAdmin();
   if (tab === 'settings') loadSettings();
+}
+
+// ============================================================
+// Profile (2026-07) — load, save, photo upload/remove, CV status
+// ============================================================
+async function loadProfile() {
+  try {
+    const r = await fetch('/api/user/profile');
+    if (!r.ok) { showToast('Sign in to view your profile.', true); return; }
+    const d = await r.json();
+    // Photo
+    const photoImg = document.getElementById('profilePhotoImg');
+    const photoPlaceholder = document.getElementById('profilePhotoPlaceholder');
+    const removeBtn = document.getElementById('removePhotoBtn');
+    if (d.has_photo) {
+      photoImg.src = '/api/user/photo?t=' + Date.now();
+      photoImg.style.display = 'block';
+      photoPlaceholder.style.display = 'none';
+      removeBtn.style.display = 'inline-block';
+    } else {
+      photoImg.style.display = 'none';
+      photoPlaceholder.style.display = 'block';
+      removeBtn.style.display = 'none';
+    }
+    // Identity
+    document.getElementById('profileDisplayName').textContent =
+      d.first_name || d.username || d.email || '—';
+    document.getElementById('profileDisplayUsername').textContent =
+      d.username ? '@' + d.username : (d.email || '');
+    // Provider badge
+    const badge = document.getElementById('profileProviderBadge');
+    const provider = d.auth_provider || 'telegram';
+    const providerLabels = { email: '📧 Email', telegram: '💬 Telegram', google: '🌐 Google' };
+    badge.innerHTML = `<span class="provider-badge ${provider}">${providerLabels[provider] || provider}</span>`;
+    // Member since / last login
+    document.getElementById('profileMemberSince').textContent =
+      'Member since: ' + (d.member_since ? d.member_since.slice(0, 10) : '—');
+    document.getElementById('profileLastLogin').textContent =
+      'Last login: ' + (d.last_login_at ? d.last_login_at.slice(0, 16).replace('T', ' ') : '—');
+    // Form fields
+    document.getElementById('profileFirstName').value = d.first_name || '';
+    document.getElementById('profileJobTitle').value = d.job_title || '';
+    document.getElementById('profileLocation').value = d.location || '';
+    document.getElementById('profilePhone').value = d.phone || '';
+    document.getElementById('profileBio').value = d.bio || '';
+    document.getElementById('profileSkills').value = d.skills || '';
+    document.getElementById('profileExperienceYears').value =
+      (d.experience_years !== null && d.experience_years !== undefined) ? d.experience_years : '';
+    document.getElementById('profileWebsite').value = d.website || '';
+    document.getElementById('profileLinkedin').value = d.linkedin || '';
+    // CV status (from settings)
+    try {
+      const sr = await fetch('/api/user/settings');
+      const sd = await sr.json();
+      const cvStatus = document.getElementById('cvStatus');
+      if (sd.resume_path) {
+        const fname = sd.resume_path.split(/[\\/]/).pop();
+        cvStatus.innerHTML = '✅ CV uploaded: <b>' + fname + '</b>';
+      } else {
+        cvStatus.innerHTML = 'No CV uploaded yet.';
+      }
+    } catch (e) { /* settings load failed — non-fatal */ }
+    document.getElementById('profileSaveStatus').textContent = '';
+  } catch (e) {
+    console.error('loadProfile error:', e);
+    showToast('Could not load profile', true);
+  }
+}
+
+async function saveProfile() {
+  const btn = document.getElementById('profileSaveBtn');
+  const status = document.getElementById('profileSaveStatus');
+  const data = {
+    first_name: document.getElementById('profileFirstName').value.trim(),
+    job_title: document.getElementById('profileJobTitle').value.trim(),
+    location: document.getElementById('profileLocation').value.trim(),
+    phone: document.getElementById('profilePhone').value.trim(),
+    bio: document.getElementById('profileBio').value,
+    skills: document.getElementById('profileSkills').value.trim(),
+    experience_years: document.getElementById('profileExperienceYears').value || null,
+    website: document.getElementById('profileWebsite').value.trim(),
+    linkedin: document.getElementById('profileLinkedin').value.trim(),
+  };
+  btn.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const res = await safeJsonFetch('/api/user/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      showToast(res.error || 'Failed to save profile', true);
+      status.textContent = '';
+      btn.disabled = false;
+      return;
+    }
+    showToast('✅ Profile saved!', 'success');
+    status.textContent = 'Saved ✓';
+    // Update the display name + header badge in case first_name changed
+    const d = res.data.profile || {};
+    document.getElementById('profileDisplayName').textContent =
+      d.first_name || d.username || d.email || '—';
+    // Re-render the header badge with the new name
+    try {
+      const me = await fetch('/api/me');
+      const meD = await me.json();
+      if (meD.authenticated) {
+        state.user = meD;
+        renderUserBadge(meD);
+      }
+    } catch (e) { /* non-fatal */ }
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  } catch (e) {
+    showToast('Error: ' + ((e && e.message) || 'unexpected error'), true);
+    status.textContent = '';
+  }
+  btn.disabled = false;
+}
+
+async function uploadProfilePhoto() {
+  const input = document.getElementById('photoFileInput');
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const r = await fetch('/api/user/photo', { method: 'POST', body: formData });
+    if (r.ok) {
+      const d = await r.json();
+      showToast(`📸 Photo uploaded (${(d.size_bytes/1024).toFixed(1)} KB)`, 'success');
+      await loadProfile();
+      // Update header badge
+      try {
+        const me = await fetch('/api/me');
+        const meD = await me.json();
+        if (meD.authenticated) { state.user = meD; renderUserBadge(meD); }
+      } catch (e) {}
+    } else {
+      const e = await r.json();
+      showToast('Upload failed: ' + (e.detail || 'unknown'), true);
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, true);
+  }
+  // Reset the input so the same file can be re-selected
+  input.value = '';
+}
+
+async function removeProfilePhoto() {
+  if (!confirm('Remove your profile photo?')) return;
+  try {
+    const r = await fetch('/api/user/photo', { method: 'DELETE' });
+    if (r.ok) {
+      showToast('Photo removed', 'info');
+      await loadProfile();
+      try {
+        const me = await fetch('/api/me');
+        const meD = await me.json();
+        if (meD.authenticated) { state.user = meD; renderUserBadge(meD); }
+      } catch (e) {}
+    } else {
+      showToast('Failed to remove photo', true);
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, true);
+  }
 }
 
 // ============================================================
