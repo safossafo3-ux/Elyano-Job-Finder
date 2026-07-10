@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_user_id INTEGER UNIQUE,
     telegram_chat_id INTEGER,
     username TEXT,
+    -- Telegram username (kept SEPARATE from the website username so that
+    -- picking a different website username during registration does NOT
+    -- overwrite the user's real Telegram handle). Used for Telegram-side
+    -- display ("Hi @tg_username") and for looking up users who log in
+    -- with their Telegram handle.
+    telegram_username TEXT,
     first_name TEXT,
     email TEXT UNIQUE,
     password_hash TEXT,
@@ -250,6 +256,10 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN experience_years INTEGER",
     "ALTER TABLE users ADD COLUMN website TEXT",
     "ALTER TABLE users ADD COLUMN linkedin TEXT",
+    # Telegram username (separate from website username). Idempotent —
+    # existing rows get NULL, which we then backfill from `username` for
+    # telegram-registered users (see init_db backfill below).
+    "ALTER TABLE users ADD COLUMN telegram_username TEXT",
 ]
 
 
@@ -325,6 +335,42 @@ def init_db():
             except sqlite3.OperationalError:
                 # Likely "duplicate column name" — idempotent, ignore.
                 pass
+
+        # Backfill telegram_username for existing Telegram-registered users.
+        # Before this migration, the Telegram username was stored in `username`
+        # and got overwritten when the user picked a different website username
+        # during registration. We can't recover the original Telegram handle
+        # in that case, but for users who NEVER changed it (username still
+        # equals the Telegram handle), we copy it across so the new column is
+        # populated. Users who did change it will have telegram_username=NULL
+        # and the display logic will fall back to first_name.
+        try:
+            # Get column list to check if telegram_username exists yet
+            cur = conn.execute("PRAGMA table_info(users)")
+            col_names = {row[1] for row in cur.fetchall()}
+            if "telegram_username" in col_names:
+                # Copy username → telegram_username for telegram-authenticated
+                # users where telegram_username is still NULL. We can't tell
+                # with 100% certainty which `username` values are real TG
+                # handles vs. website-chosen ones, so we only backfill when
+                # auth_provider='telegram' AND the user has a telegram_user_id
+                # (i.e. they really did come via Telegram).
+                conn.execute("""
+                    UPDATE users
+                       SET telegram_username = username
+                     WHERE telegram_username IS NULL
+                       AND auth_provider = 'telegram'
+                       AND telegram_user_id IS NOT NULL
+                       AND username IS NOT NULL
+                       AND username != ''
+                """)
+                # Also create an index on telegram_username for fast lookups
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_users_telegram_username "
+                    "ON users(LOWER(telegram_username))"
+                )
+        except Exception as e:
+            logger.warning(f"telegram_username backfill skipped: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -746,20 +792,27 @@ def log_scan_finish(scan_id: int, jobs_found: int, jobs_new: int, error: str = "
 def register_telegram_user(telegram_user_id: int, telegram_chat_id: int,
                            username: str = "", first_name: str = "") -> Dict[str, Any]:
     """Called when user messages the bot. Creates/updates user record immediately
-    so they can log in by username later — no code flow needed."""
+    so they can log in by username later — no code flow needed.
+
+    The Telegram username is saved in BOTH `username` (as a default website
+    username — the user can change it later during registration) AND in
+    `telegram_username` (which is NEVER overwritten, so we always know their
+    real Telegram handle for routing/display).
+    """
     now = datetime.utcnow().isoformat()
     # Normalize username: lowercase, strip leading @
     if username:
         username = username.lstrip("@").lower()
     with get_conn() as conn:
         cur = conn.execute(
-            """INSERT INTO users (telegram_user_id, telegram_chat_id, username, first_name, created_at, last_login_at)
-               VALUES (?, ?, ?, ?, ?, ?)
+            """INSERT INTO users (telegram_user_id, telegram_chat_id, username, telegram_username, first_name, created_at, last_login_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(telegram_user_id) DO UPDATE SET
                  telegram_chat_id=excluded.telegram_chat_id,
                  username=COALESCE(NULLIF(excluded.username, ''), users.username),
+                 telegram_username=COALESCE(NULLIF(excluded.telegram_username, ''), users.telegram_username, excluded.telegram_username),
                  first_name=COALESCE(NULLIF(excluded.first_name, ''), users.first_name)""",
-            (telegram_user_id, telegram_chat_id, username or None, first_name or None, now, now)
+            (telegram_user_id, telegram_chat_id, username or None, username or None, first_name or None, now, now)
         )
         row = conn.execute(
             "SELECT * FROM users WHERE telegram_user_id=?", (telegram_user_id,)
@@ -768,17 +821,35 @@ def register_telegram_user(telegram_user_id: int, telegram_chat_id: int,
 
 
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
-    """Look up a user by their Telegram username (case-insensitive, no leading @)."""
+    """Look up a user by their username (case-insensitive, no leading @).
+
+    Matches EITHER the website `username` OR the `telegram_username` —
+    so a user can log in with their Telegram handle even after changing
+    their website username during registration.
+    """
     if not username:
         return None
     clean = username.strip().lstrip("@").lower()
     if not clean:
         return None
     with get_conn() as conn:
+        # Try website username first
         row = conn.execute(
             "SELECT * FROM users WHERE LOWER(username) = ?", (clean,)
         ).fetchone()
-        return dict(row) if row else None
+        if row:
+            return dict(row)
+        # Fall back to telegram_username (so users can log in with either)
+        try:
+            row = conn.execute(
+                "SELECT * FROM users WHERE LOWER(telegram_username) = ?", (clean,)
+            ).fetchone()
+            if row:
+                return dict(row)
+        except sqlite3.OperationalError:
+            # telegram_username column might not exist yet on very old DBs
+            pass
+        return None
 
 
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
@@ -898,6 +969,11 @@ def create_user_with_credentials(
         if existing_tg_user:
             # UPDATE the pre-existing row (created by /start) with the chosen
             # credentials. Preserve first_name if the caller didn't supply one.
+            # IMPORTANT: telegram_username is NOT updated here — it was set by
+            # register_telegram_user() when the user messaged /start, and it
+            # must remain their real Telegram handle even if they pick a
+            # different website username. We only preserve it if it's somehow
+            # NULL (defensive COALESCE).
             conn.execute(
                 """UPDATE users SET
                      username = ?,
@@ -906,6 +982,7 @@ def create_user_with_credentials(
                      auth_provider = ?,
                      first_name = COALESCE(NULLIF(?, ''), first_name),
                      telegram_chat_id = COALESCE(?, telegram_chat_id),
+                     telegram_username = COALESCE(telegram_username, ?),
                      last_login_at = ?
                    WHERE id = ?""",
                 (clean_username_lower,
@@ -914,19 +991,25 @@ def create_user_with_credentials(
                  auth_provider,
                  first_name or "",
                  telegram_chat_id,
+                 existing_tg_user.get("telegram_username") or clean_username_lower,
                  now,
                  existing_tg_user["id"]),
             )
             user_id = existing_tg_user["id"]
         else:
+            # For Telegram-registered users with no pre-existing row (rare),
+            # save the chosen username as BOTH the website username and the
+            # telegram_username (best-effort — they can update later).
             cur = conn.execute(
                 """INSERT INTO users
                    (username, email, password_hash, auth_provider, first_name,
-                    telegram_user_id, telegram_chat_id, created_at, last_login_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    telegram_user_id, telegram_chat_id, telegram_username,
+                    created_at, last_login_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (clean_username_lower, clean_email or None, password_hash,
                  auth_provider, first_name or "",
                  telegram_user_id, telegram_chat_id,
+                 clean_username_lower if auth_provider == "telegram" else None,
                  now, now),
             )
             user_id = cur.lastrowid

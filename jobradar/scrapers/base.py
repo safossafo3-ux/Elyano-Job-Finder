@@ -50,6 +50,17 @@ MAX_JOBS_PER_PORTAL = int(os.getenv("MAX_JOBS_PER_PORTAL", "20"))
 # Keep this LOW so the overall scan finishes quickly.
 MAX_DETAIL_FETCHES_PER_PORTAL = int(os.getenv("MAX_DETAIL_FETCHES_PER_PORTAL", "3"))
 
+# --- TIMEOUTS (prevent scan hangs) ---
+# Per-portal hard cap. If a single portal takes longer than this (load + extract
+# + Cloudflare solve + httpx fallback), we abort it and move on. This is the
+# single most important fix for the "scan yields nothing" issue: previously a
+# single hung portal (waiting forever on Cloudflare or a slow page) would block
+# the entire scan and the user would see "0 jobs found" forever.
+PORTAL_TIMEOUT_SECONDS = float(os.getenv("PORTAL_TIMEOUT_SECONDS", "45"))
+# Overall cap for one (country, category) — even if every portal hangs, the
+# scan finishes within this many seconds and reports whatever it found.
+SCAN_TIMEOUT_SECONDS = float(os.getenv("SCAN_TIMEOUT_SECONDS", "300"))
+
 
 def screenshot_path_for(url: str) -> str:
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
@@ -69,6 +80,20 @@ CHALLENGE_TITLE_KW = [
     "enable javascript and cookies", "checking your browser",
 ]
 
+# Body-text signatures that indicate a Cloudflare/bot-challenge page even
+# when the <title> doesn't match any of the keywords above.
+CHALLENGE_BODY_KW = [
+    "verify you are human", "verifying you are human",
+    "checking your browser before accessing",
+    "please turn javascript on and reload",
+    "this process is automatic",
+    "completing the captcha",
+    "ray id:", "performance & security by cloudflare",
+    "needs to review the security of your connection",
+    "demande de vérification",
+    "überprüfen sie", "verificando",
+]
+
 
 def is_challenge_page(title: str) -> bool:
     """Detect Cloudflare/anti-bot challenge pages by title."""
@@ -77,11 +102,24 @@ def is_challenge_page(title: str) -> bool:
 
 
 async def is_page_challenged(page: Page) -> bool:
-    """Check the Playwright page's title for challenge signatures."""
+    """Check the Playwright page for challenge signatures — both the <title>
+    AND the visible body text. Cloudflare sometimes serves the challenge with
+    a normal-looking title but a body containing 'Verify you are human' etc.
+    """
     try:
         title = await page.title()
         if is_challenge_page(title):
             return True
+    except Exception:
+        pass
+    # Body-text check — catches Cloudflare variants that set a benign title
+    try:
+        body_text = await page.evaluate("() => (document.body && document.body.innerText) ? document.body.innerText.slice(0, 5000) : ''")
+        if body_text:
+            bt = body_text.lower()
+            for kw in CHALLENGE_BODY_KW:
+                if kw in bt:
+                    return True
     except Exception:
         pass
     return False
@@ -1311,7 +1349,35 @@ async def scrape_one_portal(portal: Portal, country_code: str, category_key: str
       4. Only fetch the detail page for the first MAX_DETAIL_FETCHES_PER_PORTAL jobs
          to upgrade the data (richer description, phone number, screenshot)
       5. Run analyze-and-notify for each newly-inserted job
+
+    The whole thing is wrapped in an asyncio.wait_for with PORTAL_TIMEOUT_SECONDS
+    so a single hung portal can't block the entire scan.
     """
+    try:
+        return await asyncio.wait_for(
+            _scrape_one_portal_impl(
+                portal, country_code, category_key,
+                list_page, detail_page, seen_urls, user_id,
+            ),
+            timeout=PORTAL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[{country_code}/{portal.name}] TIMEOUT after {PORTAL_TIMEOUT_SECONDS}s — moving on"
+        )
+        return {"found": 0, "new": 0}
+    except Exception as e:
+        logger.warning(
+            f"[{country_code}/{portal.name}] error: {e} — moving on"
+        )
+        return {"found": 0, "new": 0}
+
+
+async def _scrape_one_portal_impl(portal: Portal, country_code: str, category_key: str,
+                                   list_page: Page, detail_page: Page,
+                                   seen_urls: Set[str],
+                                   user_id: Optional[int] = None) -> Dict[str, int]:
+    """Actual implementation of scrape_one_portal (without the timeout wrapper)."""
     country = COUNTRIES[country_code]
     keyword = get_keyword(category_key, country_code)
     try:
@@ -1567,9 +1633,65 @@ async def scrape_one_portal(portal: Portal, country_code: str, category_key: str
 
 async def scrape_country_category(country_code: str, category_key: str,
                                   playwright, user_id: Optional[int] = None) -> Dict[str, int]:
-    """Scrape one country/category across multiple portals."""
-    country = COUNTRIES[country_code]
+    """Scrape one country/category across multiple portals.
+
+    Wrapped in an overall asyncio.wait_for(SCAN_TIMEOUT_SECONDS) so the scan
+    ALWAYS finishes — even if every portal hangs. This is critical: previously
+    a single country/category scan could run forever (no overall timeout),
+    leaving the in-memory _LIVE_SCAN['running']=True forever and showing
+    "0 new jobs found" indefinitely in the dashboard.
+    """
     scan_id = log_scan_start([country_code], [category_key], user_id=user_id)
+    try:
+        totals = await asyncio.wait_for(
+            _scrape_country_category_impl(
+                country_code, category_key, playwright, user_id,
+            ),
+            timeout=SCAN_TIMEOUT_SECONDS,
+        )
+        log_scan_finish(scan_id, totals.get("found", 0), totals.get("new", 0))
+        return totals
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[{country_code}/{category_key}] SCAN TIMEOUT after {SCAN_TIMEOUT_SECONDS}s "
+            f"— finishing with whatever was found so far"
+        )
+        # Best-effort: count jobs discovered since the scan started.
+        # The per-portal timeouts already wrote jobs to the DB as they came in.
+        try:
+            from ..database import list_jobs
+            jobs = list_jobs(country_codes=[country_code],
+                             categories=[category_key], limit=500)
+            found = len(jobs)
+            new = sum(1 for j in jobs if j.get("discovered_at", "") >=
+                      (await _scan_start_iso(scan_id) or ""))
+        except Exception:
+            found, new = 0, 0
+        log_scan_finish(scan_id, found, new, error=f"timeout after {SCAN_TIMEOUT_SECONDS}s")
+        return {"found": found, "new": new}
+    except Exception as e:
+        logger.error(f"Failed {country_code}/{category_key}: {e}")
+        log_scan_finish(scan_id, 0, 0, str(e))
+        return {"found": 0, "new": 0}
+
+
+async def _scan_start_iso(scan_id: int) -> str:
+    """Return the started_at ISO timestamp for a given scan_id."""
+    try:
+        from ..database import get_conn
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT started_at FROM scan_log WHERE id=?", (scan_id,)
+            ).fetchone()
+            return row["started_at"] if row else ""
+    except Exception:
+        return ""
+
+
+async def _scrape_country_category_impl(country_code: str, category_key: str,
+                                        playwright, user_id: Optional[int] = None) -> Dict[str, int]:
+    """Actual scrape logic (without the overall timeout wrapper)."""
+    country = COUNTRIES[country_code]
 
     browser = await playwright.chromium.launch(headless=settings.HEADLESS)
     context = await browser.new_context(
@@ -1713,11 +1835,11 @@ async def scrape_country_category(country_code: str, category_key: str,
             except Exception as e:
                 logger.error(f"[{country_code}/{category_key}] LinkedIn guest API fallback failed: {e}")
 
-        log_scan_finish(scan_id, totals["found"], totals["new"])
+        # NOTE: log_scan_finish is called by the outer scrape_country_category
+        # wrapper (which owns scan_id). This impl just returns the totals.
         return totals
     except Exception as e:
         logger.error(f"Failed {country_code}/{category_key}: {e}")
-        log_scan_finish(scan_id, 0, 0, str(e))
         return {"found": 0, "new": 0}
     finally:
         await context.close()

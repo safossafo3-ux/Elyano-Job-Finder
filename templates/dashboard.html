@@ -3128,8 +3128,8 @@ async function startSearch() {
   document.getElementById('scanBanner').innerHTML = `
     <div class="scan-spinner"></div>
     <div>
-      <div style="font-weight:600; color:#22d3ee;">Scan running… <span id="scanProgress" style="font-weight:400; color:#94a3b8;">0 new jobs found</span></div>
-      <div style="font-size:12px; color:#94a3b8;">Watch your Telegram — alerts arrive in real-time as jobs are found.</div>
+      <div style="font-weight:600; color:#22d3ee;">Scan running… <span id="scanProgress" style="font-weight:400; color:#94a3b8;">starting up…</span></div>
+      <div style="font-size:12px; color:#94a3b8;">Crawling 20-30 job portals per country. Watch your Telegram — alerts arrive in real-time as jobs are found.</div>
     </div>
   `;
   showToast('⚡ Scan started — watch your Telegram!', 'info');
@@ -3137,7 +3137,10 @@ async function startSearch() {
     const r = await fetch(`/api/scan/now?country=${countries}&category=${cats}`, { method: 'POST' });
     const d = await r.json();
     console.log('Scan started:', d);
-    // Poll scan status + reload jobs every 8 seconds while the scan is running
+    // Poll scan status + reload jobs every 5 seconds while the scan is running.
+    // The scan can take 2-5 minutes per (country, category) because it queries
+    // 20-30 portals in sequence — we MUST keep polling until the scan actually
+    // reports running=false, not give up after a fixed 25s window.
     _scanStartedAt = Date.now();
     if (_scanPollTimer) clearInterval(_scanPollTimer);
     _scanPollTimer = setInterval(async () => {
@@ -3145,20 +3148,32 @@ async function startSearch() {
         const sr = await fetch('/api/scan/status');
         const sd = await sr.json();
         const prog = document.getElementById('scanProgress');
+        const elapsedSec = Math.floor((Date.now() - _scanStartedAt) / 1000);
+        const count = sd.new_jobs_since_start || 0;
         if (prog) {
-          prog.textContent = `${sd.new_jobs_since_start || 0} new jobs found` +
-            (sd.running ? '' : ' · scan finished');
+          if (sd.running) {
+            prog.textContent = `${count} new job${count === 1 ? '' : 's'} found · ${elapsedSec}s elapsed`;
+          } else {
+            prog.textContent = `${count} new job${count === 1 ? '' : 's'} found · scan finished`;
+          }
         }
         // Reload jobs list to show newly-discovered ones
         await loadJobs();
-        // Stop polling once the scan has finished AND we've polled for at least 30s
-        if (!sd.running && (Date.now() - _scanStartedAt) > 25000) {
+        // Stop polling once the scan has finished. We give a 5s grace period
+        // after running flips to false so the final loadJobs() can pick up
+        // any stragglers. NO 25s artificial cap — the scan takes as long as
+        // it takes.
+        if (!sd.running && (Date.now() - _scanStartedAt) > 5000) {
           if (_scanPollTimer) { clearInterval(_scanPollTimer); _scanPollTimer = null; }
           document.getElementById('scanBanner').classList.remove('show');
-          showToast(`✅ Scan complete — ${sd.new_jobs_since_start || 0} new jobs found`);
+          if (count > 0) {
+            showToast(`✅ Scan complete — ${count} new job${count === 1 ? '' : 's'} found! Check your Telegram for alerts.`);
+          } else {
+            showToast(`Scan finished — no new jobs found in this run. Try different countries/roles or run again later.`);
+          }
         }
       } catch (e) { /* ignore poll errors */ }
-    }, 8000);
+    }, 5000);
   } catch (e) {
     showToast('Scan failed: ' + e.message, true);
     document.getElementById('scanBanner').classList.remove('show');

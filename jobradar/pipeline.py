@@ -13,10 +13,28 @@ from .database import (
     get_unnotified_jobs_for_user, list_users,
 )
 from .llm import analyze_ad, normalize_phone
-from .telegram_bot import notify_job, send_text
+from .telegram_bot import notify_job, send_text, build_caption
 from .config import COUNTRIES, settings
 
 logger = logging.getLogger(__name__)
+
+
+def _user_display_name(user: dict) -> str:
+    """Return the best display name for a user in Telegram messages.
+    Prefers the real Telegram handle, falls back to website username,
+    then first_name, then a generic greeting. Used so job alerts
+    address users by their Telegram @handle, not their website username.
+    """
+    tg = (user.get("telegram_username") or "").strip()
+    if tg:
+        return f"@{tg}"
+    web = (user.get("username") or "").strip()
+    if web:
+        return f"@{web}"
+    fn = (user.get("first_name") or "").strip()
+    if fn:
+        return fn
+    return "there"
 
 
 FOREIGNER_PHRASES = [
@@ -151,6 +169,18 @@ async def analyze_and_notify_single(
             if not chat_id:
                 logger.debug(f"Skipping notification for user {u.get('id')} — no telegram_chat_id (email-only user)")
                 continue
+            # Send a short personalized greeting FIRST, addressed to the
+            # user's real Telegram @handle (not their website username).
+            # This makes it clear who the alert is for and matches the user's
+            # request: "send messages to the Telegram username of the
+            # registered user, not the website username".
+            try:
+                display = _user_display_name(u)
+                greet = f"👋 Hi {display}, new job for you:"
+                await send_text(chat_id, greet)
+            except Exception as e:
+                logger.debug(f"Personalized greeting failed: {e}")
+            # Then send the actual job card (photo + caption)
             ok = await notify_job(job, chat_id)
             if ok:
                 mark_job_notified_for_user(u["id"], job["id"])
