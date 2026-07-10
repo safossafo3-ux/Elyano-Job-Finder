@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 
 SCREENSHOTS_DIR = _default_screenshots_dir()
-MAX_PORTALS_PER_COUNTRY = int(os.getenv("MAX_PORTALS_PER_COUNTRY", "15"))
-MAX_JOBS_PER_PORTAL = int(os.getenv("MAX_JOBS_PER_PORTAL", "15"))
+MAX_PORTALS_PER_COUNTRY = int(os.getenv("MAX_PORTALS_PER_COUNTRY", "30"))
+MAX_JOBS_PER_PORTAL = int(os.getenv("MAX_JOBS_PER_PORTAL", "20"))
 # How many of the top jobs per portal get a detail-page fetch (slow, gets blocked).
 # Keep this LOW so the overall scan finishes quickly.
 MAX_DETAIL_FETCHES_PER_PORTAL = int(os.getenv("MAX_DETAIL_FETCHES_PER_PORTAL", "3"))
@@ -84,6 +84,199 @@ async def is_page_challenged(page: Page) -> bool:
             return True
     except Exception:
         pass
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare Turnstile / challenge auto-solver
+#
+# When a page is served behind Cloudflare's "Verify you are human" interstitial,
+# the page typically shows a checkbox inside an iframe from challenges.cloudflare.com.
+# Clicking that checkbox once and WAITING (without further interaction) lets
+# Cloudflare validate the browser fingerprint and auto-redirect to the real
+# content. This is exactly the behavior the user described:
+#   "click it once and wait for 18 seconds with no any activity on the page,
+#    it will load on it's own"
+#
+# We detect the Turnstile iframe, click slightly LEFT OF CENTER (matches the
+# checkbox position the user observed), then wait silently for up to 30s.
+# ---------------------------------------------------------------------------
+
+# Selectors that match the Cloudflare Turnstile checkbox iframe and the
+# clickable area inside it. Cloudflare rotates these occasionally, so we
+# try several.
+TURNSTILE_IFRAME_SELECTORS = [
+    'iframe[src*="challenges.cloudflare.com"]',
+    'iframe[src*="/cdn-cgi/challenge-platform/"]',
+    'iframe[title*="Cloudflare" i]',
+    'iframe[title*="Widget" i][src*="cloudflare"]',
+    'iframe[title*="challenge" i]',
+    '#cf-chl-widget-iframe',
+    'div.cf-turnstile iframe',
+]
+
+# Clickable checkbox selectors inside the Turnstile widget (after switching
+# into the iframe's content frame).
+TURNSTILE_CHECKBOX_SELECTORS = [
+    'input[type="checkbox"]',
+    'div.cf-turnstile',
+    '#challenge-stage input',
+    'label.cb-lb',
+    'div#cf-stage',
+]
+
+
+async def _find_turnstile_iframe(page: Page):
+    """Locate a Cloudflare Turnstile iframe on the page. Returns the frame
+    element handle or None."""
+    for sel in TURNSTILE_IFRAME_SELECTORS:
+        try:
+            handle = await page.query_selector(sel)
+            if handle:
+                return handle
+        except Exception:
+            continue
+    # Fallback: any iframe whose src mentions cloudflare or challenge
+    try:
+        for frame in page.frames:
+            url = frame.url or ""
+            if "challenges.cloudflare.com" in url or "/cdn-cgi/challenge-platform/" in url:
+                return frame  # already a Frame
+    except Exception:
+        pass
+    return None
+
+
+async def _click_turnstile_checkbox(page: Page, iframe_handle) -> bool:
+    """Click the Cloudflare checkbox once. The checkbox is visually positioned
+    slightly LEFT OF CENTER inside the widget. We try (a) clicking inside the
+    iframe's content frame, then (b) clicking the iframe element at a
+    slightly-left-of-center offset as a fallback."""
+    # Strategy 1: switch into the iframe's content frame and click the checkbox
+    try:
+        frame = None
+        if hasattr(iframe_handle, "content_frame"):
+            frame = await iframe_handle.content_frame()
+        elif hasattr(iframe_handle, "url"):  # already a Frame
+            frame = iframe_handle
+        if frame:
+            for sel in TURNSTILE_CHECKBOX_SELECTORS:
+                try:
+                    box = await frame.query_selector(sel)
+                    if box:
+                        await box.click(timeout=2000, no_wait_after=True)
+                        return True
+                except Exception:
+                    continue
+            # If no checkbox element found, click the frame body at the
+            # standard checkbox offset (left-of-center, vertically centered).
+            try:
+                await frame.click("body", position={"x": 28, "y": 28},
+                                  timeout=2000, no_wait_after=True)
+                return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Strategy 2: click the IFRAME ELEMENT itself at slightly-left-of-center.
+    # The user described the checkbox as "at the center of the screen, to the
+    # left side slightly" — so we use 35% of the iframe width (left of center)
+    # and 50% height.
+    try:
+        bbox = await iframe_handle.bounding_box()
+        if bbox:
+            x = bbox["x"] + bbox["width"] * 0.35
+            y = bbox["y"] + bbox["height"] * 0.5
+            await page.mouse.move(x, y)
+            await page.mouse.click(x, y)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def solve_cloudflare_challenge(page: Page, max_wait_seconds: int = 18) -> bool:
+    """Detect a Cloudflare Turnstile challenge on the page, click the checkbox
+    ONCE, then wait silently for the page to auto-redirect.
+
+    Returns True if the challenge was solved (page navigated away from the
+    challenge URL or the title changed), False otherwise.
+
+    Per user instruction:
+      "there is a check box usually at the center of the screen to the left
+       side slightly, click it once and wait for 18 seconds with no any
+       activity on the page..it will load on it's own"
+    """
+    try:
+        title_before = (await page.title()) or ""
+    except Exception:
+        title_before = ""
+    url_before = page.url or ""
+
+    iframe_handle = await _find_turnstile_iframe(page)
+    if not iframe_handle:
+        # No Turnstile iframe — nothing to solve.
+        return False
+
+    logger.info(f"[Cloudflare] Turnstile iframe detected on {url_before[:80]} — clicking checkbox once")
+
+    clicked = await _click_turnstile_checkbox(page, iframe_handle)
+    if not clicked:
+        logger.info(f"[Cloudflare] Could not click the checkbox — trying fallback full-page click")
+        # Last resort: click at slightly-left-of-center of the viewport
+        try:
+            vp = page.viewport_size or {"width": 1366, "height": 900}
+            await page.mouse.click(vp["width"] * 0.35, vp["height"] * 0.5)
+            clicked = True
+        except Exception:
+            clicked = False
+
+    if not clicked:
+        return False
+
+    # Now WAIT SILENTLY for up to max_wait_seconds. No further clicks, no
+    # scrolling, no mouse movements — any activity can reset the challenge.
+    # Poll the page title/URL every 1s; if either changes, the challenge
+    # has been solved.
+    logger.info(f"[Cloudflare] Checkbox clicked — waiting silently up to {max_wait_seconds}s for auto-redirect")
+    waited = 0
+    while waited < max_wait_seconds:
+        await asyncio.sleep(1)
+        waited += 1
+        try:
+            title_now = (await page.title()) or ""
+        except Exception:
+            title_now = title_before
+        url_now = page.url or ""
+        # Solved if the title changed away from a challenge signature,
+        # OR the URL changed, OR no challenge iframe is present anymore.
+        if title_now != title_before and not is_challenge_page(title_now):
+            logger.info(f"[Cloudflare] Solved after {waited}s — title changed to '{title_now[:60]}'")
+            # Give the page a moment to settle after the redirect
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+            return True
+        if url_now != url_before and "challenge" not in url_now:
+            logger.info(f"[Cloudflare] Solved after {waited}s — URL changed to {url_now[:80]}")
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+            return True
+        # Check if the Turnstile iframe is gone
+        iframe_still_there = await _find_turnstile_iframe(page)
+        if not iframe_still_there and not is_challenge_page(title_now):
+            logger.info(f"[Cloudflare] Solved after {waited}s — challenge iframe removed")
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+            return True
+
+    logger.info(f"[Cloudflare] Waited {waited}s — challenge not cleared, continuing anyway")
     return False
 
 
@@ -568,11 +761,228 @@ def httpx_extract_duckduckgo(html: str, base_url: str) -> List[Dict[str, str]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Search-engine result page (SERP) extractors — Google, Bing, Yandex, DDG.
+#
+# When we use Google/Bing/Yandex as a "portal", the search results page links
+# to job postings on various job boards (Infostud, Posao.ba, Indeed, etc.).
+# We extract these external job-board links and treat each as a job.
+# ---------------------------------------------------------------------------
+
+# Known job-board URL patterns — when a search result URL matches one of
+# these, we treat it as a job posting. This filter is critical because Google
+# SERPs contain many non-job links (news, Wikipedia, blog posts, etc.).
+JOB_URL_PATTERNS = [
+    # International job boards
+    "/jobs/", "/job/", "/job-view", "/viewjob", "/jobdetail", "/jobs/view/",
+    "/vacanc", "/vacature", "/vacancy", "/stellen/", "/stellenangebot",
+    "/offres/", "/offre/", "/ofertas/", "/oferta/", "/empleos/",
+    "/praca/", "/allasok/", "/munka/", "/locuri-de-munca", "/darbo-skelbimai",
+    "/toopakkumine", "/vakances", "/praca", "/allas",
+    # Local-language job boards (Balkans)
+    "infostud.com", "poslovi.infostud.com", "hello.work", "helloworld.rs",
+    "posao.ba", "infostud.ba", "mojposao.ba", "poslovi.com",
+    "infostud.rs", "najposao.rs", "poslovi.rs", "oglasiradim",
+    # Local-language job boards (Eastern Europe)
+    "ejobs.ro", "bestjobs.ro", "helloastronaut.com", "olx.ro",
+    "cv.ee", "cvkeskus.ee", "cv.lv", "workingday.lv", "ss.com",
+    "infopraca.pl", "olx.pl", "praca.pl", "gumtree.pl",
+    # Local-language job boards (Western Europe)
+    "stepstone.de", "xing.com", "meinestadt.de", "jobware.de",
+    "infojobs.net", "infojobs.it", "monster.es", "laboris.net",
+    "meteojob.com", "leboncoin.fr", "optioncarriere.com",
+    "indeed.", "linkedin.com/jobs", "glassdoor.", "jooble.org",
+    "talent.com", "careerjet.", "monster.", "bayt.com",
+    "reed.co.uk", "totaljobs.com", "cv-library.co.uk", "jobsite.co.uk",
+    "jobstreet.", "jobsdb.", "shine.com", "naukri.com",
+    "computrabajo.", "bumeran.", "catho.com.br", "kariyer.net",
+    "jobindex.dk", "jobnet.dk", "blocketjobbsajt.se", "blocket.se",
+    "tori.ee", "tyopaikat.oikotie.fi", "duunitori.fi",
+    # Generic patterns
+    "career", "recruit", "apply", "hiring",
+]
+
+# Patterns to explicitly SKIP — non-job results that often appear in SERPs.
+SKIP_SERP_URLS = [
+    "wikipedia.org", "youtube.com", "facebook.com", "twitter.com", "x.com",
+    "instagram.com", "linkedin.com/company", "linkedin.com/in/",
+    "linkedin.com/posts/", "reddit.com", "tiktok.com",
+    "play.google.com", "apps.apple.com", "amazon.",
+    "google.com/search", "google.com/url", "bing.com/search",
+    "yandex.com/search", "duckduckgo.com",
+    ".pdf", ".jpg", ".png", ".gif",
+    "/news/", "/blog/", "/article/",
+    "pinterest.", "medium.com",
+]
+
+
+def _is_likely_job_url(url: str) -> bool:
+    """Heuristic: does this URL look like a job posting?"""
+    if not url:
+        return False
+    u = url.lower()
+    # Skip obvious non-job URLs
+    for skip in SKIP_SERP_URLS:
+        if skip in u:
+            return False
+    # Check for job URL patterns
+    for pat in JOB_URL_PATTERNS:
+        if pat in u:
+            return True
+    return False
+
+
+def httpx_extract_google_serp(html: str, base_url: str) -> List[Dict[str, str]]:
+    """Parse Google Search results page HTML. Google SERPs embed external
+    result links inside <a href="/url?q=<actual-url>&..."> wrappers, plus
+    <a href="<actual-url>"> in knowledge panels. We extract both, filter to
+    likely job URLs, and dedupe."""
+    out: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    # Google wraps result links as <a href="/url?q=ENCODED_URL&sa=...">title</a>
+    # or sometimes as <a href="https://actual-url">title</a> in newer layouts.
+    # We try both patterns.
+    patterns = [
+        # /url?q=... pattern (classic)
+        r'<a[^>]+href="/url\?q=([^&"]+)[^"]*"[^>]*>(.*?)</a>',
+        # direct https:// links in <h3> parents (newer Google layout)
+        r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+    ]
+    for pat in patterns:
+        for m in _re.finditer(pat, html, _re.IGNORECASE | _re.DOTALL):
+            href = _unescape(m.group(1))
+            title = _strip_html(m.group(2))[:200]
+            if not title or len(title) < 5:
+                continue
+            if href.startswith("//"):
+                href = "https:" + href
+            if href.startswith("/"):
+                href = urljoin(base_url, href)
+            # Filter to likely job URLs
+            if not _is_likely_job_url(href):
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            out.append({"url": href, "title": title, "company": "", "location": "", "summary": ""})
+            if len(out) >= 30:
+                return out
+    return out
+
+
+def httpx_extract_bing_serp(html: str, base_url: str) -> List[Dict[str, str]]:
+    """Parse Bing search results. Bing wraps result links as
+    <a href="https://actual-url">title</a> inside <li class="b_algo">."""
+    out: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for m in _re.finditer(
+        r'<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+        html, _re.IGNORECASE | _re.DOTALL,
+    ):
+        href = m.group(1)
+        title = _strip_html(m.group(2))[:200]
+        if not title or len(title) < 5:
+            continue
+        # Skip Bing-internal links
+        if "bing.com" in href.lower() or "microsoft.com" in href.lower():
+            continue
+        if not _is_likely_job_url(href):
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append({"url": href, "title": title, "company": "", "location": "", "summary": ""})
+        if len(out) >= 30:
+            break
+    return out
+
+
+def httpx_extract_yandex_serp(html: str, base_url: str) -> List[Dict[str, str]]:
+    """Parse Yandex search results. Similar to Bing — direct https:// links."""
+    return httpx_extract_bing_serp(html, base_url)
+
+
+# Playwright-based SERP extractors — for when the search engine serves a
+# JS-heavy page that needs a real browser.
+
+async def extract_job_links_serp(page: Page, base_url: str) -> List[Dict[str, str]]:
+    """Generic SERP extractor for Google/Bing/Yandex/DDG. Reads all <a> tags,
+    filters to likely-job URLs, returns the results. Works in a real browser
+    context (after Cloudflare has been solved, if applicable)."""
+    return await page.evaluate(
+        """
+        (baseurl) => {
+          const out = [];
+          const seen = new Set();
+          // Known job URL patterns (must match the Python JOB_URL_PATTERNS)
+          const jobPats = [
+            /\\/jobs?\\//i, /\\/job\\//i, /\\/job-view/i, /\\/viewjob/i, /\\/jobdetail/i,
+            /\\/vacanc/i, /\\/vacature/i, /\\/vacancy/i, /\\/stellen\\//i, /\\/stellenangebot/i,
+            /\\/offres?\\//i, /\\/ofertas?\\//i, /\\/empleos?\\//i, /\\/praca\\//i,
+            /\\/locuri-de-munca/i, /\\/darbo-skelbimai/i, /\\/toopakkumine/i,
+            /\\/vakances/i, /\\/allas/i, /\\/allasok/i, /\\/munka/i,
+            /infostud/i, /posao\\.ba/i, /helloworld/i, /hello\\.work/i,
+            /najposao/i, /poslovi\\./i, /ejobs/i, /bestjobs/i,
+            /olx\\./i, /cv\\.ee/i, /cv\\.lv/i, /cvkeskus/i, /workingday/i,
+            /infopraca/i, /praca\\.pl/i, /stepstone/i, /xing/i, /infojobs/i,
+            /indeed\\./i, /linkedin\\.com\\/jobs/i, /glassdoor/i, /jooble/i,
+            /talent\\.com/i, /careerjet/i, /monster\\./i, /bayt/i, /reed\\.co/i,
+            /totaljobs/i, /cv-library/i, /jobsite/i, /jobstreet/i, /jobsdb/i,
+            /naukri/i, /computrabajo/i, /bumeran/i, /catho/i, /kariyer/i,
+            /jobindex/i, /blocket/i, /duunitori/i, /oikotie/i,
+            /career/i, /recruit/i, /apply/i, /hiring/i
+          ];
+          const skipPats = [
+            /wikipedia/i, /youtube/i, /facebook/i, /twitter/i, /x\\.com/i,
+            /instagram/i, /linkedin\\.com\\/company/i, /linkedin\\.com\\/in\\//i,
+            /linkedin\\.com\\/posts\\//i, /reddit/i, /tiktok/i,
+            /play\\.google/i, /apps\\.apple/i, /amazon\\./i,
+            /google\\.com\\/(search|url)/i, /bing\\.com\\/(search|maps)/i,
+            /yandex\\.com\\/(search|maps)/i, /duckduckgo/i,
+            /\\.pdf$/i, /\\.jpg$/i, /\\.png$/i, /\\.gif$/i,
+            /\\/news\\//i, /\\/blog\\//i, /pinterest/i, /medium\\.com/i
+          ];
+          for (const a of document.querySelectorAll('a[href]')) {
+            const href = a.href;
+            if (!href || href.startsWith('javascript:') || href.startsWith('#')) continue;
+            const text = (a.innerText || a.textContent || '').trim();
+            if (text.length < 5 || text.length > 250) continue;
+            // Skip non-job URLs
+            if (skipPats.some(p => p.test(href))) continue;
+            // Keep only job-like URLs
+            if (!jobPats.some(p => p.test(href))) continue;
+            if (seen.has(href)) continue;
+            seen.add(href);
+            // Try to grab a snippet from the parent result container
+            const card = a.closest('div.g, div.result, li.b_algo, div organic, div[data-ved], div[class*="result"]');
+            let summary = '';
+            if (card) {
+              const span = card.querySelector('span, div[class*="snippet"], div[class*="desc"]');
+              if (span) summary = (span.innerText || '').trim().slice(0, 500);
+            }
+            out.push({url: href, title: text.slice(0, 200), company: '', location: '', summary: summary});
+            if (out.length >= 30) break;
+          }
+          return out;
+        }
+        """,
+        base_url,
+    )
+
+
 # Map portal_type -> httpx fallback extractor
 _HTTPX_EXTRACTORS = {
     "talent":      httpx_extract_talent,
     "careerjet":   httpx_extract_careerjet,
     "duckduckgo":  httpx_extract_duckduckgo,
+    "duckduckgo_local": httpx_extract_duckduckgo,
+    "duckduckgo_sites": httpx_extract_duckduckgo,
+    "google":      httpx_extract_google_serp,
+    "google_local": httpx_extract_google_serp,
+    "google_jobs": httpx_extract_google_serp,
+    "google_jobs_ddg": httpx_extract_duckduckgo,
+    "bing":        httpx_extract_bing_serp,
+    "yandex":      httpx_extract_yandex_serp,
 }
 
 
@@ -715,6 +1125,15 @@ _PORTAL_EXTRACTORS = {
     "careerjet":   extract_job_links_careerjet,
     "glassdoor":   extract_job_links_glassdoor,
     "monster":     extract_job_links_monster,
+    # Search engine SERP extractors (Google/Bing/Yandex/DDG)
+    "google":           extract_job_links_serp,
+    "google_local":     extract_job_links_serp,
+    "google_jobs":      extract_job_links_serp,
+    "google_jobs_ddg":  extract_job_links_serp,
+    "bing":             extract_job_links_serp,
+    "yandex":           extract_job_links_serp,
+    "duckduckgo_local": extract_job_links_serp,
+    "duckduckgo_sites": extract_job_links_serp,
     # For all others, fall back to generic
 }
 
@@ -904,50 +1323,91 @@ async def scrape_one_portal(portal: Portal, country_code: str, category_key: str
         return {"found": 0, "new": 0}
 
     logger.info(f"[{country_code}/{portal.name}] {search_url[:120]}")
-    try:
-        await list_page.goto(search_url, wait_until="domcontentloaded",
-                             timeout=settings.PAGE_TIMEOUT_MS)
-    except PWTimeout:
-        logger.warning(f"Timeout loading {portal.name} for {country_code}")
-        return {"found": 0, "new": 0}
-    except Exception as e:
-        logger.warning(f"Error loading {portal.name}: {e}")
-        return {"found": 0, "new": 0}
 
-    # Click cookie banner if present (best-effort)
-    for btn_text in ["Accept", "Accept all", "Got it", "Continue", "I agree", "OK",
-                     "Akkoord", "Accepter", "Accepteer", "Zustimmen", "Aceitar", "Aceptar"]:
+    # --- SEARCH-ENGINE OPTIMIZATION ---
+    # For search engines (Google/Bing/Yandex/DDG), httpx is FASTER and often
+    # MORE RELIABLE than Playwright — Playwright triggers "unusual traffic"
+    # captchas on Google and DDG that httpx avoids. So for these portal types,
+    # we try httpx FIRST and only fall back to Playwright if httpx returns 0.
+    SEARCH_ENGINE_TYPES = {
+        "google", "google_local", "google_jobs", "google_jobs_ddg",
+        "bing", "yandex",
+        "duckduckgo", "duckduckgo_local", "duckduckgo_sites",
+    }
+    raw_links = []
+    if portal.portal_type in SEARCH_ENGINE_TYPES:
         try:
-            btn = list_page.get_by_role("button", name=btn_text).first
-            if await btn.count() > 0:
-                await btn.click(timeout=800)
-                break
-        except Exception:
-            continue
+            raw_links = await httpx_scrape_portal(portal.portal_type, search_url)
+        except Exception as e:
+            logger.warning(f"httpx failed for search engine {portal.name}: {e}")
+            raw_links = []
+        if raw_links:
+            logger.info(f"[{country_code}/{portal.name}] httpx found {len(raw_links)} links — skipping Playwright")
+        else:
+            logger.info(f"[{country_code}/{portal.name}] httpx returned 0 links — trying Playwright")
 
-    # Brief settle for SPA-like pages
-    try:
-        await list_page.wait_for_load_state("networkidle", timeout=3000)
-    except Exception:
-        pass
-
-    # --- CLOUDFLARE / CHALLENGE DETECTION ---
-    # If the page is a Cloudflare/anti-bot challenge page, the extractors will
-    # find false-positive links like "Find jobs" navigation. Detect this and
-    # skip straight to the httpx fallback (which uses real browser headers
-    # and bypasses Cloudflare's Playwright fingerprint detection).
-    if await is_page_challenged(list_page):
-        logger.info(f"[{country_code}/{portal.name}] Cloudflare challenge detected — trying httpx fallback")
-        raw_links = await httpx_scrape_portal(portal.portal_type, search_url)
-        if not raw_links:
-            logger.info(f"[{country_code}/{portal.name}] httpx fallback also returned 0 links")
+    if not raw_links:
+        try:
+            await list_page.goto(search_url, wait_until="domcontentloaded",
+                                 timeout=settings.PAGE_TIMEOUT_MS)
+        except PWTimeout:
+            logger.warning(f"Timeout loading {portal.name} for {country_code}")
             return {"found": 0, "new": 0}
-        # Proceed with the links from httpx
-    else:
-        raw_links = await extract_job_links(portal.portal_type, list_page, search_url)
-        if not raw_links:
-            # Some portals embed results inside iframes; try the generic extractor on the whole document
-            raw_links = await extract_job_links_generic(list_page, search_url)
+        except Exception as e:
+            logger.warning(f"Error loading {portal.name}: {e}")
+            return {"found": 0, "new": 0}
+
+    # Click cookie banner if present (best-effort) — only needed if we loaded
+    # the page in Playwright (i.e., we don't already have raw_links from httpx).
+    if not raw_links:
+        for btn_text in ["Accept", "Accept all", "Got it", "Continue", "I agree", "OK",
+                         "Akkoord", "Accepter", "Accepteer", "Zustimmen", "Aceitar", "Aceptar"]:
+            try:
+                btn = list_page.get_by_role("button", name=btn_text).first
+                if await btn.count() > 0:
+                    await btn.click(timeout=800)
+                    break
+            except Exception:
+                continue
+
+    # Brief settle for SPA-like pages — only needed if we loaded Playwright
+    if not raw_links:
+        try:
+            await list_page.wait_for_load_state("networkidle", timeout=3000)
+        except Exception:
+            pass
+
+    # --- CLOUDFLARE / CHALLENGE DETECTION + AUTO-SOLVE ---
+    # Per user instruction: when Cloudflare's "Verify you are human" interstitial
+    # appears (a checkbox slightly left of center), click it ONCE and wait
+    # silently for ~18 seconds. The page auto-redirects to the real content.
+    # We try the auto-solver FIRST; only if it fails do we fall back to httpx.
+    #
+    # NOTE: if we already have raw_links from the search-engine httpx-first
+    # optimization above, skip this entire block — we don't need Playwright.
+    if not raw_links:
+        challenge_detected = await is_page_challenged(list_page)
+        if challenge_detected or await _find_turnstile_iframe(list_page):
+            logger.info(f"[{country_code}/{portal.name}] Cloudflare challenge detected — auto-solving (click + 18s wait)")
+            solved = await solve_cloudflare_challenge(list_page, max_wait_seconds=18)
+            if solved:
+                logger.info(f"[{country_code}/{portal.name}] Cloudflare challenge SOLVED — extracting jobs from real page")
+                # After solving, extract job links normally
+                raw_links = await extract_job_links(portal.portal_type, list_page, search_url)
+                if not raw_links:
+                    raw_links = await extract_job_links_generic(list_page, search_url)
+            else:
+                # Auto-solver didn't clear the challenge — fall back to httpx
+                logger.info(f"[{country_code}/{portal.name}] Cloudflare not cleared — trying httpx fallback")
+                raw_links = await httpx_scrape_portal(portal.portal_type, search_url)
+                if not raw_links:
+                    logger.info(f"[{country_code}/{portal.name}] httpx fallback also returned 0 links")
+                    return {"found": 0, "new": 0}
+        else:
+            raw_links = await extract_job_links(portal.portal_type, list_page, search_url)
+            if not raw_links:
+                # Some portals embed results inside iframes; try the generic extractor on the whole document
+                raw_links = await extract_job_links_generic(list_page, search_url)
 
     # --- HTTPX FALLBACK ---
     # If Playwright returned 0 links (but page wasn't a challenge), the

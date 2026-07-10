@@ -628,6 +628,229 @@ def _ojt_url(country_code: str, keyword: str, country_name: str) -> str:
     return ""  # disabled
 
 
+# ---------------------------------------------------------------------------
+# Google Search — in the country's local language.
+#
+# Per user instruction: "start your job search by google...in the language of
+# the selected country". We build a Google search URL with:
+#   - hl=<language>   (UI language)
+#   - gl=<country>    (country filter)
+#   - q=<local keyword for "jobs"> + <category keyword>
+#
+# The local-language "jobs" word is critical — searching Google for "jobs" in
+# Serbia returns mostly English results, but "posao" returns the actual local
+# job boards (Infostud, Poslovi Infostud, HelloWorld, etc.).
+# ---------------------------------------------------------------------------
+
+# Local-language translations of "jobs" / "work" / "vacancies" — used to
+# construct Google queries that surface local-language job boards.
+LOCAL_JOBS_WORDS = {
+    "Serbian": "posao", "Bosnian": "posao", "Croatian": "posao",
+    "Montenegrin": "posao", "Macedonian": "rabota", "Albanian": "pune",
+    "German": "Jobs", "Austrian": "Jobs", "Swiss": "Jobs",
+    "French": "emploi", "Dutch": "vacatures", "Flemish": "vacatures",
+    "Italian": "lavoro", "Spanish": "empleo", "Portuguese": "emprego",
+    "Polish": "praca", "Czech": "prace", "Slovak": "praca",
+    "Hungarian": "allas", "Romanian": "locuri de munca", "Bulgarian": "rabota",
+    "Greek": "ergasia", "Turkish": "is ilanlari",
+    "Danish": "jobs", "Swedish": "jobb", "Norwegian": "jobb",
+    "Finnish": "tyopaikat", "Icelandic": "storf",
+    "Estonian": "toopakkumised", "Latvian": "vacances", "Lithuanian": "darbo skelbimai",
+    "Russian": "rabota", "Ukrainian": "robota", "Belarusian": "praca",
+    "Moldovan": "locuri de munca", "Georgian": "samushao",
+    "Armenian": "ashxatanq",
+    "Arabic": "wadaif", "Hebrew": "jobim",
+    "Japanese": "kyujin", "Korean": "chae-yong",
+    "Chinese": "zhaopin", "Thai": "rangngan",
+    "Vietnamese": "viec lam", "Indonesian": "lowongan kerja",
+    "Malay": "kerja kosong", "Filipino": "trabajo",
+    "English": "jobs",
+    "Hindi": "naukri", "Bengali": "chakri", "Urdu": "nokri",
+    "Persian": "estekhdam",
+    "Swahili": "kazi", "Amharic": "sira",
+    "Slovenian": "delo",
+}
+
+
+def _local_jobs_word(language: str) -> str:
+    """Return the local-language word for 'jobs' for a given country language."""
+    if not language:
+        return "jobs"
+    return LOCAL_JOBS_WORDS.get(language, "jobs")
+
+
+# Map country-language names (as stored in COUNTRIES) to ISO 639-1 codes
+# for Google's hl= parameter. Google uses these to localize the search UI
+# and bias results toward local-language content.
+_LANGUAGE_TO_HL = {
+    "Serbian": "sr", "Bosnian": "bs", "Croatian": "hr",
+    "Montenegrin": "sr", "Macedonian": "mk", "Albanian": "sq",
+    "German": "de", "Austrian": "de", "Swiss": "de",
+    "French": "fr", "Dutch": "nl", "Flemish": "nl",
+    "Italian": "it", "Spanish": "es", "Portuguese": "pt",
+    "Polish": "pl", "Czech": "cs", "Slovak": "sk",
+    "Hungarian": "hu", "Romanian": "ro", "Moldovan": "ro",
+    "Bulgarian": "bg", "Greek": "el", "Slovenian": "sl",
+    "Turkish": "tr",
+    "Danish": "da", "Swedish": "sv", "Norwegian": "no",
+    "Finnish": "fi", "Icelandic": "is",
+    "Estonian": "et", "Latvian": "lv", "Lithuanian": "lt",
+    "Russian": "ru", "Ukrainian": "uk", "Belarusian": "be",
+    "Georgian": "ka", "Armenian": "hy",
+    "Arabic": "ar", "Hebrew": "iw",
+    "Japanese": "ja", "Korean": "ko",
+    "Chinese": "zh-CN", "Thai": "th",
+    "Vietnamese": "vi", "Indonesian": "id",
+    "Malay": "ms", "Filipino": "tl",
+    "English": "en",
+    "Hindi": "hi", "Bengali": "bn", "Urdu": "ur",
+    "Persian": "fa",
+    "Swahili": "sw", "Amharic": "am",
+}
+
+
+def _google_cc_domain(country_code: str) -> str:
+    """Map an ISO country code to its Google country domain (e.g. RS → google.rs)."""
+    cc = country_code.lower()
+    # Most countries use google.<cc>, with a few exceptions
+    exceptions = {
+        "gb": "google.co.uk", "uk": "google.co.uk",
+        "us": "google.com",
+        "ie": "google.ie",
+        "au": "google.com.au", "nz": "google.co.nz",
+        "kr": "google.co.kr", "jp": "google.co.jp",
+        "in": "google.co.in", "cn": "google.com.hk",
+        "tw": "google.com.tw", "hk": "google.com.hk",
+        "sa": "google.com.sa", "ae": "google.ae",
+        "il": "google.co.il", "eg": "google.com.eg",
+        "za": "google.co.za", "ng": "google.com.ng",
+        "ke": "google.co.ke", "ma": "google.co.ma",
+        "br": "google.com.br", "mx": "google.com.mx",
+        "ar": "google.com.ar", "cl": "google.cl",
+        "co": "google.com.co", "pe": "google.com.pe",
+        "ve": "google.co.ve", "uy": "google.com.uy",
+        "py": "google.com.py", "bo": "google.com.bo",
+        "ec": "google.com.ec", "cr": "google.co.cr",
+        "pa": "google.com.pa", "do": "google.com.do",
+        "pr": "google.com.pr", "gt": "google.com.gt",
+    }
+    return exceptions.get(cc, f"google.{cc}")
+
+
+def _google_local_url(country_code: str, keyword: str, country_name: str) -> str:
+    """Google Search in the country's local language.
+
+    Builds a query like: '<local "jobs" word> <category keyword> <country name>'
+    and uses google.<cc> with hl=<language> and gl=<cc>.
+    """
+    from .config import COUNTRIES
+    country = COUNTRIES.get(country_code.upper())
+    if not country:
+        return ""
+    local_jobs = _local_jobs_word(country.language)
+    # Build the query: local "jobs" word + the category keyword + country name.
+    # Example for Serbia/courier: "posao courier Serbia"
+    q = quote_plus(f"{local_jobs} {keyword} {country_name}")
+    domain = _google_cc_domain(country_code)
+    hl = _LANGUAGE_TO_HL.get(country.language, "en")
+    gl = country_code.lower()
+    return f"https://{domain}/search?q={q}&hl={hl}&gl={gl}&num=30"
+
+
+def _google_jobs_url(country_code: str, keyword: str, country_name: str) -> str:
+    """Google Jobs — uses the local Google domain with a jobs-specific query.
+
+    Google Jobs results are surfaced in regular search when you add 'jobs'
+    or use the /jobs path. We construct a search that targets job postings
+    via the 'site:' operator on major job boards.
+    """
+    from .config import COUNTRIES
+    country = COUNTRIES.get(country_code.upper())
+    if not country:
+        return ""
+    local_jobs = _local_jobs_word(country.language)
+    # Target job-board sites explicitly so Google surfaces their listings.
+    q = quote_plus(
+        f"{local_jobs} {keyword} {country_name} "
+        f"(site:indeed.com OR site:linkedin.com/jobs OR site:jooble.org OR "
+        f"site:glassdoor.com OR site:talent.com OR site:careerjet.com OR "
+        f"site:monster.com OR site:bayt.com OR site:stepstone.com OR "
+        f"site:infojobs.net OR site:infostud.com OR site:posao.ba)"
+    )
+    domain = _google_cc_domain(country_code)
+    hl = _LANGUAGE_TO_HL.get(country.language, "en")
+    gl = country_code.lower()
+    return f"https://{domain}/search?q={q}&hl={hl}&gl={gl}&num=30"
+
+
+def _bing_jobs_url(country_code: str, keyword: str, country_name: str) -> str:
+    """Bing search for jobs — secondary search engine for diversity."""
+    from .config import COUNTRIES
+    country = COUNTRIES.get(country_code.upper())
+    if not country:
+        return ""
+    local_jobs = _local_jobs_word(country.language)
+    q = quote_plus(f"{local_jobs} {keyword} {country_name}")
+    cc = country_code.lower()
+    return f"https://www.bing.com/search?q={q}&cc={cc}&count=30"
+
+
+def _yandex_jobs_url(country_code: str, keyword: str, country_name: str) -> str:
+    """Yandex search — particularly effective for Russia/CIS/Turkey."""
+    cc = country_code.upper()
+    # Yandex is most useful for Russia, CIS, Turkey, and some Eastern Europe
+    if cc not in ("RU","UA","BY","MD","GE","AM","TR","KZ","UZ","AZ","LV","LT","EE"):
+        return ""
+    from .config import COUNTRIES
+    country = COUNTRIES.get(cc)
+    if not country:
+        return ""
+    local_jobs = _local_jobs_word(country.language)
+    q = quote_plus(f"{local_jobs} {keyword} {country_name}")
+    # Yandex uses cc= for country
+    return f"https://yandex.com/search/?text={q}&lr=213&num=30"
+
+
+def _duckduckgo_local_url(country_code: str, keyword: str, country_name: str) -> str:
+    """DuckDuckGo search in the local language — for diversity of results."""
+    from .config import COUNTRIES
+    country = COUNTRIES.get(country_code.upper())
+    if not country:
+        return ""
+    local_jobs = _local_jobs_word(country.language)
+    q = quote_plus(f"{local_jobs} {keyword} {country_name}")
+    # DuckDuckGo HTML endpoint — kl=<cc> sets the region
+    kl = f"-{country_code.lower()}"
+    return f"https://html.duckduckgo.com/html/?q={q}&kl={kl}"
+
+
+def _duckduckgo_site_search_url(country_code: str, keyword: str, country_name: str) -> str:
+    """DuckDuckGo site-specific search — surfaces jobs hosted on major boards."""
+    from .config import COUNTRIES
+    country = COUNTRIES.get(country_code.upper())
+    if not country:
+        return ""
+    local_jobs = _local_jobs_word(country.language)
+    # Search across multiple job board domains
+    q = quote_plus(
+        f"{local_jobs} {keyword} {country_name} "
+        f"(site:indeed.com OR site:linkedin.com/jobs OR site:jooble.org OR "
+        f"site:glassdoor.com OR site:talent.com OR site:careerjet.com)"
+    )
+    return f"https://html.duckduckgo.com/html/?q={q}"
+
+
+def _google_jobs_via_ddg_url(country_code: str, keyword: str, country_name: str) -> str:
+    """Old GoogleJobs entry — kept for backward compat, now uses local language."""
+    from .config import COUNTRIES
+    country = COUNTRIES.get(country_code.upper())
+    if not country:
+        return ""
+    local_jobs = _local_jobs_word(country.language)
+    kw = quote_plus(f"{local_jobs} {keyword} {country_name} site:linkedin.com/jobs OR site:glassdoor.com OR site:jooble.org")
+    return f"https://html.duckduckgo.com/html/?q={kw}"
+
+
 def _duckduckgo_url(country_code: str, keyword: str, country_name: str) -> str:
     """DuckDuckGo HTML search — used as universal fallback to discover more jobs."""
     kw = quote_plus(f"{keyword} jobs {country_name}")
@@ -691,6 +914,32 @@ def _ojt_eea_url(country_code: str, keyword: str, country_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 PORTALS: List[Portal] = [
+    # ===== SEARCH ENGINES — TRIED FIRST (per user instruction: "start your
+    #       job search by google...in the language of the selected country") =====
+    # These portals query Google/Bing/Yandex in the country's local language,
+    # which surfaces local-language job boards (Infostud, Posao.ba, EJobs, etc.)
+    # that English-language job aggregators miss.
+
+    # 0a. Google Search in local language (priority 1) — PRIMARY ENTRY POINT
+    Portal("Google (local)", "google_local", _google_local_url, weight=1),
+
+    # 0b. Google Jobs query (priority 2) — targets job-board sites explicitly
+    Portal("Google Jobs", "google_jobs", _google_jobs_url, weight=2),
+
+    # 0c. Bing search in local language (priority 3) — secondary search engine
+    Portal("Bing Jobs", "bing", _bing_jobs_url, weight=3),
+
+    # 0d. Yandex search (priority 4) — for Russia/CIS/Turkey/Eastern Europe
+    Portal("Yandex Jobs", "yandex", _yandex_jobs_url, weight=4),
+
+    # 0e. DuckDuckGo in local language (priority 5) — diversity
+    Portal("DuckDuckGo (local)", "duckduckgo_local", _duckduckgo_local_url, weight=5),
+
+    # 0f. DuckDuckGo site-specific search (priority 6)
+    Portal("DuckDuckGo (sites)", "duckduckgo_sites", _duckduckgo_site_search_url, weight=6),
+
+    # ===== TRADITIONAL JOB PORTALS =====
+
     # 1. Indeed (priority 10) — works for all 60+ Indeed-supported countries
     Portal("Indeed", "indeed", _indeed_url, weight=10),
 
