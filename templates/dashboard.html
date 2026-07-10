@@ -894,13 +894,6 @@
     display: flex; gap: 10px; flex-wrap: wrap;
   }
   .login-row > button, .login-row > a { flex: 1; min-width: 130px; }
-  .login-row > a.btn-telegram {
-    cursor: pointer; font-weight: 600; font-size: 14px;
-    padding: 12px 16px; border-radius: 10px;
-    transition: transform 0.15s, box-shadow 0.15s;
-  }
-  .login-row > a.btn-telegram:hover { transform: translateY(-1px); }
-  .login-row > a.btn-telegram:active { transform: translateY(0); }
   .login-divider {
     display: flex; align-items: center;
     margin: 18px 0;
@@ -1159,12 +1152,12 @@
           Gmail
         </button>
         {% endif %}
-        <a class="btn-telegram" href="https://t.me/EuropaElyano_bot" target="_blank" rel="noopener noreferrer" style="text-decoration:none; display:flex; align-items:center; justify-content:center; gap:8px;">
+        <button class="btn-telegram" onclick="showLoginView('telegram')" type="button">
           <svg class="btn-tg-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
             <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/>
           </svg>
           Telegram
-        </a>
+        </button>
       </div>
 
       <p style="margin-top:18px; font-size:11px; color:#64748b; line-height:1.5;">

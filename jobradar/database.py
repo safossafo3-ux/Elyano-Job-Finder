@@ -858,30 +858,78 @@ def create_user_with_credentials(
         raise ValueError("Username can only contain letters, numbers, underscores, and dots")
     clean_username_lower = clean_username.lower()
 
-    # Check for duplicate username (case-insensitive)
-    if get_user_by_username(clean_username_lower):
-        raise ValueError("That username is already taken. Please choose another.")
+    # For Telegram registration, the /start command already created a user row
+    # (via register_telegram_user) with the user's telegram_user_id, chat_id,
+    # Telegram username, and first_name — but NO password_hash. We need to
+    # detect that pre-existing row so we can UPDATE it instead of INSERTing a
+    # duplicate (which would fail with "username already taken" if the user
+    # kept their Telegram username, or a UNIQUE(telegram_user_id) constraint
+    # violation if they picked a different username).
+    existing_tg_user = None
+    if auth_provider == "telegram" and telegram_user_id:
+        existing_tg_user = get_user_by_telegram_id(telegram_user_id)
+
+    # Check for duplicate username (case-insensitive) — but allow it if the
+    # duplicate is the same Telegram user we're about to UPDATE.
+    existing_by_username = get_user_by_username(clean_username_lower)
+    if existing_by_username:
+        if (existing_tg_user
+                and existing_by_username.get("id") == existing_tg_user.get("id")):
+            # Same user — we'll UPDATE below, so this is fine.
+            pass
+        else:
+            raise ValueError("That username is already taken. Please choose another.")
 
     # Check for duplicate email if provided
     clean_email = ""
     if email:
         clean_email = email.strip().lower()
-        if get_user_by_email(clean_email):
-            raise ValueError("An account with this email already exists.")
+        existing_by_email = get_user_by_email(clean_email)
+        if existing_by_email:
+            if (existing_tg_user
+                    and existing_by_email.get("id") == existing_tg_user.get("id")):
+                # Same user — we'll UPDATE below.
+                pass
+            else:
+                raise ValueError("An account with this email already exists.")
 
     now = datetime.utcnow().isoformat()
     with get_conn() as conn:
-        cur = conn.execute(
-            """INSERT INTO users
-               (username, email, password_hash, auth_provider, first_name,
-                telegram_user_id, telegram_chat_id, created_at, last_login_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (clean_username_lower, clean_email or None, password_hash,
-             auth_provider, first_name or "",
-             telegram_user_id, telegram_chat_id,
-             now, now),
-        )
-        user_id = cur.lastrowid
+        if existing_tg_user:
+            # UPDATE the pre-existing row (created by /start) with the chosen
+            # credentials. Preserve first_name if the caller didn't supply one.
+            conn.execute(
+                """UPDATE users SET
+                     username = ?,
+                     email = COALESCE(?, email),
+                     password_hash = ?,
+                     auth_provider = ?,
+                     first_name = COALESCE(NULLIF(?, ''), first_name),
+                     telegram_chat_id = COALESCE(?, telegram_chat_id),
+                     last_login_at = ?
+                   WHERE id = ?""",
+                (clean_username_lower,
+                 clean_email or None,
+                 password_hash,
+                 auth_provider,
+                 first_name or "",
+                 telegram_chat_id,
+                 now,
+                 existing_tg_user["id"]),
+            )
+            user_id = existing_tg_user["id"]
+        else:
+            cur = conn.execute(
+                """INSERT INTO users
+                   (username, email, password_hash, auth_provider, first_name,
+                    telegram_user_id, telegram_chat_id, created_at, last_login_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (clean_username_lower, clean_email or None, password_hash,
+                 auth_provider, first_name or "",
+                 telegram_user_id, telegram_chat_id,
+                 now, now),
+            )
+            user_id = cur.lastrowid
         # Create default user_settings row
         try:
             conn.execute(
