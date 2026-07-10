@@ -6,11 +6,14 @@ Adds users table, login_codes table, user_searches, user_job_notifications.
 import sqlite3
 import json
 import secrets
+import logging
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 
 SCHEMA = """

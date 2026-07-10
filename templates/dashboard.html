@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>JobRadar — Global Job Scout</title>
+<link rel="icon" type="image/jpeg" href="/static/logo.jpg">
+<link rel="apple-touch-icon" href="/static/logo-192.png">
+<title>Elyano Job Finder — Global Job Scout</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
@@ -891,7 +893,14 @@
   .login-row {
     display: flex; gap: 10px; flex-wrap: wrap;
   }
-  .login-row > button { flex: 1; min-width: 130px; }
+  .login-row > button, .login-row > a { flex: 1; min-width: 130px; }
+  .login-row > a.btn-telegram {
+    cursor: pointer; font-weight: 600; font-size: 14px;
+    padding: 12px 16px; border-radius: 10px;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .login-row > a.btn-telegram:hover { transform: translateY(-1px); }
+  .login-row > a.btn-telegram:active { transform: translateY(0); }
   .login-divider {
     display: flex; align-items: center;
     margin: 18px 0;
@@ -1075,7 +1084,7 @@
      Click anywhere to skip. Uses sessionStorage so it only shows once
      per tab session (not on every page navigation). -->
 <div class="splash-overlay" id="splashOverlay" onclick="hideSplash()">
-  <img src="/static/logo.png" alt="Elyano Job Finder logo" class="splash-logo">
+  <img src="/static/logo.jpg" alt="Elyano Job Finder logo" class="splash-logo">
   <div class="splash-title">Elyano Job Finder</div>
   <div class="splash-tagline">Your <b>Job</b> being sent to Your hands</div>
   <div class="splash-loader"></div>
@@ -1085,7 +1094,7 @@
 <!-- ============== HEADER ============== -->
 <header class="glass">
   <div style="display:flex; align-items:center; gap:12px;">
-    <img src="/static/logo.png" alt="logo" style="width:38px; height:38px; border-radius:9px; box-shadow:0 4px 12px rgba(34,211,238,0.3);">
+    <img src="/static/logo.jpg" alt="logo" style="width:38px; height:38px; border-radius:9px; box-shadow:0 4px 12px rgba(34,211,238,0.3);">
     <h1>Elyano Job Finder <span class="subtitle">— Global</span></h1>
   </div>
   <div class="header-right">
@@ -1105,7 +1114,7 @@
 
     <!-- ============ MAIN WELCOME VIEW (default) ============ -->
     <div id="loginMain" class="auth-panel">
-      <img src="/static/logo.png" alt="logo" style="width:72px; height:72px; border-radius:16px; margin:0 auto 14px; display:block; box-shadow:0 6px 24px rgba(34,211,238,0.35);">
+      <img src="/static/logo.jpg" alt="logo" style="width:72px; height:72px; border-radius:16px; margin:0 auto 14px; display:block; box-shadow:0 6px 24px rgba(34,211,238,0.35);">
       <div class="login-welcome">Welcome to Elyano Job Finder</div>
       <div class="login-subtitle">Your Job being sent to Your hands — sign in or create an account.</div>
 
@@ -1150,12 +1159,12 @@
           Gmail
         </button>
         {% endif %}
-        <button class="btn-telegram" onclick="showLoginView('telegram')">
+        <a class="btn-telegram" href="https://t.me/EuropaElyano_bot" target="_blank" rel="noopener noreferrer" style="text-decoration:none; display:flex; align-items:center; justify-content:center; gap:8px;">
           <svg class="btn-tg-icon" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
             <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/>
           </svg>
           Telegram
-        </button>
+        </a>
       </div>
 
       <p style="margin-top:18px; font-size:11px; color:#64748b; line-height:1.5;">
