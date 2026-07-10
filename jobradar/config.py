@@ -794,8 +794,44 @@ class Settings:
     DATABASE_PATH: str = os.getenv("DATABASE_PATH", _default_db_path())
 
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    # Default to the user's actual bot — they can override via env if they ever rename it.
-    TELEGRAM_BOT_USERNAME: str = os.getenv("TELEGRAM_BOT_USERNAME", "EuropaElyano_bot")
+    # The bot's @username (e.g. @EuropaElyano_bot). This MUST be a valid
+    # Telegram username: 5–32 chars, only letters/digits/underscores, must
+    # start with a letter, CANNOT contain spaces.
+    #
+    # We CANNOT trust the TELEGRAM_BOT_USERNAME env var blindly — users
+    # sometimes mistakenly set it to the bot's DISPLAY NAME (e.g.
+    # "Elyano Job Finder") which contains spaces and is NOT a valid username.
+    # The resulting https://t.me/Elyano Job Finder URL is broken (Telegram
+    # can't open it), and the registration button silently fails.
+    #
+    # Rules:
+    #   1. If the env var contains a space → it's a display name, not a
+    #      username → ignore it and use the known-correct "EuropaElyano_bot".
+    #   2. Otherwise, sanitize (strip @, drop invalid chars) and check length.
+    #   3. If anything is off, fall back to "EuropaElyano_bot".
+    _raw_bot_username: str = os.getenv("TELEGRAM_BOT_USERNAME", "EuropaElyano_bot")
+    _known_correct_username: str = "EuropaElyano_bot"
+    if " " in _raw_bot_username.strip():
+        # The env var is set to a display name (has spaces) — fall back.
+        _sanitized_bot_username = _known_correct_username
+        _display_name = _raw_bot_username.strip()
+    else:
+        _sanitized_bot_username = (
+            _raw_bot_username.strip().lstrip("@")
+        )
+        _sanitized_bot_username = "".join(
+            c for c in _sanitized_bot_username if c.isalnum() or c == "_"
+        )
+        if len(_sanitized_bot_username) < 5 or len(_sanitized_bot_username) > 32:
+            _sanitized_bot_username = _known_correct_username
+        _display_name = "Elyano Job Finder"
+    TELEGRAM_BOT_USERNAME: str = _sanitized_bot_username
+    # The display name (e.g. "Elyano Job Finder") is shown in Telegram's chat
+    # header but is NOT used in URLs. We expose it for display purposes only.
+    TELEGRAM_BOT_DISPLAY_NAME: str = os.getenv(
+        "TELEGRAM_BOT_DISPLAY_NAME",
+        _display_name,
+    )
     WEBAPP_PUBLIC_URL: str = os.getenv("WEBAPP_PUBLIC_URL", "")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")  # fallback admin chat
 
