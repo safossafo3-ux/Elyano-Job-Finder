@@ -21,16 +21,24 @@ logger = logging.getLogger(__name__)
 
 def _user_display_name(user: dict) -> str:
     """Return the best display name for a user in Telegram messages.
-    Prefers the real Telegram handle, falls back to website username,
-    then first_name, then a generic greeting. Used so job alerts
-    address users by their Telegram @handle, not their website username.
+
+    Preference order (STRICT — never falls back to the website username,
+    which the user may have chosen during registration and may differ from
+    their real Telegram handle):
+      1. telegram_username  → "@aly"           (their real Telegram @handle)
+      2. first_name          → "Aly"            (set by Telegram on /start)
+      3. "there"             → "there"          (generic fallback)
+
+    IMPORTANT: We do NOT fall back to the website `username` field. Per the
+    user's explicit instruction: "send the messages to the telegram username
+    of the registered user, not the website username". Falling back to the
+    website username would address the user by a name they picked for the
+    website (e.g. "aly123") instead of their real Telegram handle, which is
+    confusing in a Telegram chat.
     """
     tg = (user.get("telegram_username") or "").strip()
     if tg:
         return f"@{tg}"
-    web = (user.get("username") or "").strip()
-    if web:
-        return f"@{web}"
     fn = (user.get("first_name") or "").strip()
     if fn:
         return fn

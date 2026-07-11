@@ -366,10 +366,17 @@ async def send_login_code_to_user(username: str) -> dict:
         first_name=user.get("first_name") or "",
     )
 
-    # Prefer the user's real Telegram handle for display. Fall back to the
-    # website username only if telegram_username wasn't saved (legacy users).
-    tg_handle = user.get("telegram_username") or user.get("username") or ""
-    display = f"@{tg_handle}" if tg_handle else (user.get("first_name") or "there")
+    # Always prefer the user's real Telegram handle. Per the user's explicit
+    # instruction, NEVER fall back to the website `username` field — that's
+    # the name they chose for the website, not their Telegram identity, and
+    # using it in a Telegram chat is confusing. If telegram_username is missing
+    # (rare — means they sent /start before setting a Telegram @handle), use
+    # first_name (always set by Telegram on /start).
+    tg_handle = user.get("telegram_username") or ""
+    if tg_handle:
+        display = f"@{tg_handle}"
+    else:
+        display = user.get("first_name") or "there"
     msg = (
         f"🔐 <b>JobRadar Login Code</b>\n\n"
         f"Hi {display}, here is your one-time login code:\n\n"
@@ -459,10 +466,13 @@ async def send_registration_code_to_user(username: str) -> dict:
         first_name=user.get("first_name") or "",
     )
 
-    # Prefer the user's real Telegram handle for display. Fall back to the
-    # website username only if telegram_username wasn't saved (legacy users).
-    tg_handle = user.get("telegram_username") or user.get("username") or ""
-    display = f"@{tg_handle}" if tg_handle else (user.get("first_name") or "there")
+    # Always prefer the user's real Telegram handle. Per the user's explicit
+    # instruction, NEVER fall back to the website `username` field.
+    tg_handle = user.get("telegram_username") or ""
+    if tg_handle:
+        display = f"@{tg_handle}"
+    else:
+        display = user.get("first_name") or "there"
     msg = (
         f"📝 <b>JobRadar Registration Code</b>\n\n"
         f"Hi {display}, here is your one-time registration code:\n\n"

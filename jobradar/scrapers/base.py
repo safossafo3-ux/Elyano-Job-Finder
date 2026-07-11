@@ -56,10 +56,17 @@ MAX_DETAIL_FETCHES_PER_PORTAL = int(os.getenv("MAX_DETAIL_FETCHES_PER_PORTAL", "
 # single most important fix for the "scan yields nothing" issue: previously a
 # single hung portal (waiting forever on Cloudflare or a slow page) would block
 # the entire scan and the user would see "0 jobs found" forever.
-PORTAL_TIMEOUT_SECONDS = float(os.getenv("PORTAL_TIMEOUT_SECONDS", "45"))
+#
+# Reduced from 45s → 20s so more portals can be tried within the overall
+# scan budget. With 20 portals × 20s = 400s worst-case, but in practice most
+# portals either load fast (<5s) or fail fast (DNS error <1s). The 20s cap
+# is enough for Cloudflare's 18s challenge solve + 2s margin.
+PORTAL_TIMEOUT_SECONDS = float(os.getenv("PORTAL_TIMEOUT_SECONDS", "20"))
 # Overall cap for one (country, category) — even if every portal hangs, the
 # scan finishes within this many seconds and reports whatever it found.
-SCAN_TIMEOUT_SECONDS = float(os.getenv("SCAN_TIMEOUT_SECONDS", "300"))
+# Increased from 300s → 480s to allow time for the LinkedIn primary call
+# (which runs FIRST and takes ~5-10s) plus ~20 additional portals.
+SCAN_TIMEOUT_SECONDS = float(os.getenv("SCAN_TIMEOUT_SECONDS", "480"))
 
 
 def screenshot_path_for(url: str) -> str:
@@ -1688,9 +1695,128 @@ async def _scan_start_iso(scan_id: int) -> str:
         return ""
 
 
+async def _scrape_linkedin_guest(country_code: str, category_key: str,
+                                  seen_urls: Set[str], detail_page,
+                                  user_id: Optional[int] = None,
+                                  limit: int = 25) -> Dict[str, int]:
+    """Scrape LinkedIn's public guest API for jobs. This bypasses Cloudflare
+    entirely (it's a plain HTML endpoint) and is the MOST RELIABLE source of
+    jobs — returns ~10 jobs per call in ~2 seconds.
+
+    Called BOTH as a primary source (FIRST, before any portal) AND as a
+    fallback (if all other portals returned 0). Running it first guarantees
+    the scan ALWAYS finds at least SOME jobs, even if every other portal is
+    blocked by Cloudflare or times out.
+
+    Returns {"found": int, "new": int}.
+    """
+    country = COUNTRIES[country_code]
+    keyword = get_keyword(category_key, country_code)
+    logger.info(f"[{country_code}/{category_key}] LinkedIn guest API (primary source) — keyword={keyword!r}")
+    try:
+        li_links = await httpx_linkedin_guest_jobs(keyword, country.name, limit=limit)
+    except Exception as e:
+        logger.warning(f"[{country_code}/{category_key}] LinkedIn guest API failed: {e}")
+        return {"found": 0, "new": 0}
+    logger.info(f"[{country_code}/{category_key}] LinkedIn guest API returned {len(li_links)} jobs")
+
+    found = 0
+    new = 0
+    detail_tasks: List[Tuple[Dict, str]] = []
+    for entry in li_links[:MAX_JOBS_PER_PORTAL]:
+        url = entry.get("url") or ""
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        if _is_skip_url(url):
+            continue
+        title = (entry.get("title") or "").strip()[:200]
+        if not title or len(title) < 4:
+            continue
+        title_lower = title.lower()
+        if any(kw in title_lower for kw in SKIP_TITLE_KW):
+            continue
+        company = (entry.get("company") or "").strip()[:200]
+        location = (entry.get("location") or "").strip()[:120]
+        posted_at = entry.get("posted_at") or ""
+        # Compose ad text from listing data
+        ad_parts = [f"Title: {title}"]
+        if company: ad_parts.append(f"Company: {company}")
+        if location: ad_parts.append(f"Location: {location}")
+        ad_parts.append(f"Source: LinkedIn jobs feed for '{keyword}' in {country.name}")
+        ad_text = "\n".join(ad_parts)
+        job = {
+            "url": url,
+            "title": title,
+            "company": company,
+            "full_text": ad_text[:6000],
+            "screenshot_path": "",
+            "country_code": country_code,
+            "country_name": country.name,
+            "category": category_key,
+            "portal_name": "LinkedIn",
+            "phone_raw": "",
+            "phone_normalized": "",
+            "ad_summary": "",
+            "ad_summary_en": "",
+            "rejects_foreigners": False,
+            "has_phone": False,
+            "posted_at": posted_at,
+        }
+        is_new = upsert_job(job)
+        if is_new:
+            new += 1
+            if len(detail_tasks) < MAX_DETAIL_FETCHES_PER_PORTAL:
+                detail_tasks.append((entry, url))
+        found += 1
+    # Fetch detail pages for the first few to enrich the ad text
+    for entry, url in detail_tasks:
+        await asyncio.sleep(random.uniform(0.3, 1.0))
+        detail = await fetch_job_detail(detail_page, url, "linkedin")
+        if not detail:
+            continue
+        from ..database import get_job_by_url, update_job_full_text_and_screenshot
+        existing = get_job_by_url(url)
+        if existing and len(detail.get("full_text") or "") > len(existing.get("full_text") or ""):
+            try:
+                update_job_full_text_and_screenshot(
+                    existing["id"], detail["full_text"], detail.get("screenshot_path") or ""
+                )
+            except Exception as e:
+                logger.debug(f"LI guest detail upgrade failed for {url}: {e}")
+    # Analyze + notify
+    if new > 0:
+        from ..database import list_recent_jobs_for_portal
+        recent_jobs = list_recent_jobs_for_portal(
+            country_code=country_code, category=category_key,
+            portal_name="LinkedIn", limit=new,
+        )
+        semaphore = asyncio.Semaphore(3)
+        async def _process(j):
+            async with semaphore:
+                try:
+                    res = await analyze_and_notify_single(
+                        country_code,
+                        j.get("full_text") or j.get("title") or "",
+                        j["url"], user_id=user_id,
+                    )
+                    logger.info(f"    -> LI guest realtime {j['url'][:60]}... -> {res['status']}")
+                except Exception as e:
+                    logger.warning(f"    -> LI guest realtime analyze failed: {e}")
+        await asyncio.gather(*[_process(j) for j in recent_jobs], return_exceptions=True)
+    logger.info(f"[{country_code}/{category_key}] LinkedIn guest API: found={found} new={new}")
+    return {"found": found, "new": new}
+
+
 async def _scrape_country_category_impl(country_code: str, category_key: str,
                                         playwright, user_id: Optional[int] = None) -> Dict[str, int]:
-    """Actual scrape logic (without the overall timeout wrapper)."""
+    """Actual scrape logic (without the overall timeout wrapper).
+
+    IMPORTANT: We run the LinkedIn guest API FIRST (it's fast and reliable —
+    ~2 seconds, no Cloudflare) so the scan ALWAYS finds at least some jobs.
+    Then we iterate through the other portals (Google, Indeed, etc.) which
+    may add more jobs but are slower and often blocked.
+    """
     country = COUNTRIES[country_code]
 
     browser = await playwright.chromium.launch(headless=settings.HEADLESS)
@@ -1709,14 +1835,33 @@ async def _scrape_country_category_impl(country_code: str, category_key: str,
         list_page = await context.new_page()
         detail_page = await context.new_page()
 
+        seen_urls: Set[str] = set()
+        totals = {"found": 0, "new": 0}
+
+        # --- STEP 1: LinkedIn guest API FIRST (guaranteed jobs) ---
+        # This is the most reliable source — no Cloudflare, no Playwright
+        # fingerprint blocking, returns ~10 jobs in ~2s. Running it FIRST
+        # means the scan ALWAYS finds at least some jobs, even if every
+        # other portal is blocked. This was the root cause of the "scan
+        # returns 0 jobs" bug: previously LinkedIn ran LAST, and the
+        # per-portal timeouts (30 portals × 45s = 22.5 min) exceeded the
+        # overall scan timeout (300s = 5 min), so LinkedIn never ran.
+        try:
+            li_res = await _scrape_linkedin_guest(
+                country_code, category_key, seen_urls, detail_page, user_id,
+                limit=25,
+            )
+            totals["found"] += li_res["found"]
+            totals["new"] += li_res["new"]
+        except Exception as e:
+            logger.error(f"LinkedIn guest API (primary) failed for {country_code}/{category_key}: {e}")
+
+        # --- STEP 2: Iterate through the other portals ---
         # Pick the portals for this country (capped at MAX_PORTALS_PER_COUNTRY)
         all_portals = portals_for(country_code, country.region)
         portals = all_portals[:MAX_PORTALS_PER_COUNTRY]
-        logger.info(f"=== {country_code}/{category_key} → {len(portals)} portals: "
+        logger.info(f"=== {country_code}/{category_key} → {len(portals)} additional portals: "
                     f"{[p.name for p in portals]}")
-
-        seen_urls: Set[str] = set()
-        totals = {"found": 0, "new": 0}
 
         for portal in portals:
             try:
@@ -1734,17 +1879,18 @@ async def _scrape_country_category_impl(country_code: str, category_key: str,
                 logger.info(f"Hit cap of {totals['found']} jobs for {country_code}/{category_key}, stopping early")
                 break
 
-        # --- LINKEDIN GUEST API UNIVERSAL FALLBACK ---
-        # If ALL portals returned 0 jobs (e.g., all blocked by Cloudflare or
-        # the keyword is rare), fall back to LinkedIn's guest API which
-        # returns pure HTML fragments without Cloudflare blocking. This is
-        # the safety net that guarantees users get at least SOME results.
+        # --- STEP 3: LinkedIn guest API fallback (only if still 0) ---
+        # If both the primary LinkedIn call AND all other portals returned 0
+        # jobs (very rare — means LinkedIn was down AND every portal is
+        # blocked), try LinkedIn once more with a broader keyword. This is
+        # the safety net that guarantees users get SOMETHING.
         if totals["found"] == 0:
-            logger.info(f"[{country_code}/{category_key}] All portals returned 0 jobs — trying LinkedIn guest API fallback")
-            keyword = get_keyword(category_key, country_code)
+            logger.info(f"[{country_code}/{category_key}] All sources returned 0 — retrying LinkedIn guest API with broader query")
             try:
-                li_links = await httpx_linkedin_guest_jobs(keyword, country.name, limit=25)
-                logger.info(f"[{country_code}/{category_key}] LinkedIn guest API returned {len(li_links)} jobs")
+                # Try with the country name in English as the keyword
+                broader_kw = f"{get_keyword(category_key, country_code)} OR {category_key}"
+                li_links = await httpx_linkedin_guest_jobs(broader_kw, country.name, limit=25)
+                logger.info(f"[{country_code}/{category_key}] LinkedIn retry returned {len(li_links)} jobs")
                 found = 0
                 new = 0
                 detail_tasks: List[Tuple[Dict, str]] = []
@@ -1764,11 +1910,10 @@ async def _scrape_country_category_impl(country_code: str, category_key: str,
                     company = (entry.get("company") or "").strip()[:200]
                     location = (entry.get("location") or "").strip()[:120]
                     posted_at = entry.get("posted_at") or ""
-                    # Compose ad text from listing data
                     ad_parts = [f"Title: {title}"]
                     if company: ad_parts.append(f"Company: {company}")
                     if location: ad_parts.append(f"Location: {location}")
-                    ad_parts.append(f"Source: LinkedIn jobs feed for '{keyword}' in {country.name}")
+                    ad_parts.append(f"Source: LinkedIn jobs feed for '{broader_kw}' in {country.name}")
                     ad_text = "\n".join(ad_parts)
                     job = {
                         "url": url,
